@@ -28,7 +28,7 @@ resolve_schedule() {
     # Validate. Rejects empty, paths with /, quotes, %, ;, spaces — anything
     # that would be unsafe to drop into an SQL string literal or a path.
     if [[ ! "$id" =~ ^[A-Za-z0-9_-]+$ ]]; then
-        echo "[$prog] invalid schedule id: ${id@Q} (allowed: [A-Za-z0-9_-]+)" >&2
+        echo "[$prog] invalid schedule id: $(printf '%q' "$id") (allowed: [A-Za-z0-9_-]+)" >&2
         exit 1
     fi
     local file="schedules/${id}.yaml"
