@@ -12,108 +12,37 @@ asserts:
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 import asyncpg
 import pytest
-from testcontainers.core.container import DockerContainer
-from testcontainers.core.wait_strategies import LogMessageWaitStrategy
+
+# tsdb_container and postgres_metadata come from tests/integration/conftest.py
+# (session-scoped). The two tests below share state with the rest of the
+# integration suite, so each one TRUNCATEs the tables it touches before
+# seeding — same isolation pattern as test_parquet_export.py and
+# test_orchestrator_unreachable.py.
 
 
-@pytest.fixture(scope="module")
-def tsdb_container() -> Iterator[str]:
-    c = (
-        DockerContainer("timescale/timescaledb:2.16.1-pg16")
-        .with_env("POSTGRES_USER", "lab")
-        .with_env("POSTGRES_PASSWORD", "lab")
-        .with_env("POSTGRES_DB", "telemetry")
-        .with_exposed_ports(5432)
-        .waiting_for(
-            LogMessageWaitStrategy(
-                "database system is ready to accept connections"
-            ).with_startup_timeout(60)
-        )
-    )
-    c.start()
+async def _truncate_state(tsdb_dsn: str, pg_dsn: str) -> None:
+    """Reset every table this test will touch on both DBs.
+
+    Session-scoped fixtures mean prior tests (parquet, orchestrator_resume,
+    orchestrator_unreachable) may have left rows behind. Without this each
+    rerun would fail on row-count assertions.
+    """
+    tsdb_pool = await asyncpg.create_pool(tsdb_dsn, min_size=1, max_size=2)
     try:
-        host = c.get_container_host_ip()
-        port = int(c.get_exposed_port(5432))
-        dsn = f"postgresql://lab:lab@{host}:{port}/telemetry"
-
-        root = Path(__file__).resolve().parents[2]
-        tsdb_sql = [p.read_text() for p in sorted((root / "migrations" / "timescale").glob("*.sql"))]
-
-        async def _migrate() -> None:
-            conn = await asyncpg.connect(dsn)
-            try:
-                for sql in tsdb_sql:
-                    await conn.execute(sql)
-            finally:
-                await conn.close()
-
-        for _ in range(20):
-            try:
-                asyncio.run(_migrate())
-                break
-            except (asyncpg.PostgresError, OSError):
-                import time
-
-                time.sleep(0.5)
-        else:
-            raise RuntimeError("could not apply timescale migrations")
-        yield dsn
+        async with tsdb_pool.acquire() as conn:
+            await conn.execute("TRUNCATE telemetry, parquet_exports")
     finally:
-        c.stop()
-
-
-@pytest.fixture(scope="module")
-def pg_metadata_container() -> Iterator[str]:
-    """Postgres with metadata + cycle_features schema applied."""
-    c = (
-        DockerContainer("postgres:16")
-        .with_env("POSTGRES_USER", "lab")
-        .with_env("POSTGRES_PASSWORD", "lab")
-        .with_env("POSTGRES_DB", "lab")
-        .with_exposed_ports(5432)
-        .waiting_for(
-            LogMessageWaitStrategy(
-                "database system is ready to accept connections"
-            ).with_startup_timeout(60)
-        )
-    )
-    c.start()
+        await tsdb_pool.close()
+    pg_pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=2)
     try:
-        host = c.get_container_host_ip()
-        port = int(c.get_exposed_port(5432))
-        dsn = f"postgresql://lab:lab@{host}:{port}/lab"
-
-        root = Path(__file__).resolve().parents[2]
-        pg_sql = [p.read_text() for p in sorted((root / "migrations" / "postgres").glob("*.sql"))]
-
-        async def _migrate() -> None:
-            conn = await asyncpg.connect(dsn)
-            try:
-                for sql in pg_sql:
-                    await conn.execute(sql)
-            finally:
-                await conn.close()
-
-        for _ in range(20):
-            try:
-                asyncio.run(_migrate())
-                break
-            except (asyncpg.PostgresError, OSError):
-                import time
-
-                time.sleep(0.5)
-        else:
-            raise RuntimeError("could not apply postgres migrations")
-        yield dsn
+        async with pg_pool.acquire() as conn:
+            await conn.execute("TRUNCATE alerts, cycle_features, experiments CASCADE")
     finally:
-        c.stop()
+        await pg_pool.close()
 
 
 def _seed_cycle(
@@ -253,9 +182,11 @@ async def _seed_experiment(dsn: str, exp_id: str, chassis_id: int, channel_idx: 
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_pipeline_writes_features_and_detects_r0_jump(
-    tsdb_container: str, pg_metadata_container: str
+    tsdb_container: str, postgres_metadata: str
 ) -> None:
     from analytics.pipeline import process_cycle
+
+    await _truncate_state(tsdb_container, postgres_metadata)
 
     exp_id = "exp_analytics_e2e"
     chassis_id, channel_idx = 1, 0
@@ -282,10 +213,10 @@ async def test_pipeline_writes_features_and_detects_r0_jump(
         r0_ohm=0.025,
     )
     await _insert_telemetry(tsdb_container, cycle1_rows)
-    await _seed_experiment(pg_metadata_container, exp_id, chassis_id, channel_idx)
+    await _seed_experiment(postgres_metadata, exp_id, chassis_id, channel_idx)
 
     tsdb_pool = await asyncpg.create_pool(tsdb_container, min_size=1, max_size=2)
-    pg_pool = await asyncpg.create_pool(pg_metadata_container, min_size=1, max_size=2)
+    pg_pool = await asyncpg.create_pool(postgres_metadata, min_size=1, max_size=2)
     try:
         # Process cycle 0 — establishes baseline R0; no prior, so no anomaly.
         feat0 = await process_cycle(
@@ -370,10 +301,12 @@ async def test_pipeline_writes_features_and_detects_r0_jump(
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_pipeline_no_alert_when_r0_stable(
-    tsdb_container: str, pg_metadata_container: str
+    tsdb_container: str, postgres_metadata: str
 ) -> None:
     """Two cycles with the same R0 → no anomaly alert."""
     from analytics.pipeline import process_cycle
+
+    await _truncate_state(tsdb_container, postgres_metadata)
 
     exp_id = "exp_stable_r0"
     chassis_id, channel_idx = 2, 0  # different chassis to keep alerts isolated
@@ -391,10 +324,10 @@ async def test_pipeline_no_alert_when_r0_stable(
     )
     await _insert_telemetry(tsdb_container, rows0)
     await _insert_telemetry(tsdb_container, rows1)
-    await _seed_experiment(pg_metadata_container, exp_id, chassis_id, channel_idx)
+    await _seed_experiment(postgres_metadata, exp_id, chassis_id, channel_idx)
 
     tsdb_pool = await asyncpg.create_pool(tsdb_container, min_size=1, max_size=2)
-    pg_pool = await asyncpg.create_pool(pg_metadata_container, min_size=1, max_size=2)
+    pg_pool = await asyncpg.create_pool(postgres_metadata, min_size=1, max_size=2)
     try:
         for cyc in (0, 1):
             await process_cycle(
