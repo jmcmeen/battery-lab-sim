@@ -14,6 +14,7 @@ import contextlib
 from dataclasses import dataclass
 
 import pytest
+from batterylab.time import SimTime
 from orchestrator import channel_keepalive
 from orchestrator.executor import Experiment
 
@@ -71,7 +72,9 @@ async def _run_one_iteration(
         # Yield once so the cancel below can interrupt before the next sweep.
         await asyncio.sleep(0)
 
-    monkeypatch.setattr(channel_keepalive.SimTime, "sleep", fake_sleep)
+    # Patching the class object — the import in channel_keepalive resolves
+    # to the same SimTime, so this affects the loop's await SimTime.sleep().
+    monkeypatch.setattr(SimTime, "sleep", fake_sleep)
 
     task = asyncio.create_task(
         channel_keepalive.channel_keepalive_loop(cyclers_by_id, experiments)  # type: ignore[arg-type]
