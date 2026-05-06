@@ -112,9 +112,10 @@ When adding a new **test**:
 
 ### Add a new schedule
 1. Create `schedules/<name>.yaml`.
-2. Run `make validate-schedules` — Pydantic checks the schema.
-3. Smoke test: `make demo SCHEDULE=schedules/<name>.yaml`.
-4. Commit. The schedule's git SHA will be recorded with every experiment that uses it.
+2. Required `bench:` block: `chassis` (single id, "1-16" range, YAML list, or "1,5,9") and `channels_per_chassis` (1..32). Match the chassis range to the schedule's chamber temp — cyclers 01–08 are in Chamber A (25 °C), 09–16 in Chamber B (45 °C). The bench layout is part of the experimental setup; a different layout is a different schedule, not a CLI flag.
+3. Run `make validate-schedules` — Pydantic checks the schema, including bench bounds against `MAX_CHASSIS` / `MAX_CHANNELS_PER_CHASSIS` in `libs/batterylab/src/batterylab/schedule.py`.
+4. Smoke test: `make demo SCHEDULE=schedules/<name>.yaml`.
+5. Commit. The schedule's git SHA will be recorded with every experiment that uses it.
 
 ### Add a new chaos scenario
 1. Bash script in `chaos/<name>.sh`. Must `set -euo pipefail` and `source chaos/_lib.sh`. Use the helpers (`preflight_services_healthy`, `pg_query`, `tsdb_query`, `count_alerts_since_start`, `assert_eq`/`assert_ge`, `pass`/`fail`). Print `PASS` on success or `fail` on first violation.

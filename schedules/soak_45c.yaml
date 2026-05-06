@@ -5,6 +5,9 @@ chemistry: NMC
 # scale with temperature (Arrhenius), so this experiment ages cells faster
 # than soak_25c and produces visible dQ/dV peak shift in fewer cycles —
 # the contrast with soak_25c is the analytics demo story.
+bench:
+  chassis: 9-16              # Chamber B is 45 °C → cyclers 09-16 (docker-compose.yml)
+  channels_per_chassis: 32
 chamber:
   setpoint_c: 45.0
   soak_seconds: 1800

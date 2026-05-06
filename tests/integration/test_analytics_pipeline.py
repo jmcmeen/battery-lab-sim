@@ -20,7 +20,7 @@ from pathlib import Path
 import asyncpg
 import pytest
 from testcontainers.core.container import DockerContainer
-from testcontainers.core.waiting_utils import wait_for_logs
+from testcontainers.core.wait_strategies import LogMessageWaitStrategy
 
 
 @pytest.fixture(scope="module")
@@ -31,10 +31,14 @@ def tsdb_container() -> Iterator[str]:
         .with_env("POSTGRES_PASSWORD", "lab")
         .with_env("POSTGRES_DB", "telemetry")
         .with_exposed_ports(5432)
+        .waiting_for(
+            LogMessageWaitStrategy(
+                "database system is ready to accept connections"
+            ).with_startup_timeout(60)
+        )
     )
     c.start()
     try:
-        wait_for_logs(c, "database system is ready to accept connections", timeout=60)
         host = c.get_container_host_ip()
         port = int(c.get_exposed_port(5432))
         dsn = f"postgresql://lab:lab@{host}:{port}/telemetry"
@@ -74,10 +78,14 @@ def pg_metadata_container() -> Iterator[str]:
         .with_env("POSTGRES_PASSWORD", "lab")
         .with_env("POSTGRES_DB", "lab")
         .with_exposed_ports(5432)
+        .waiting_for(
+            LogMessageWaitStrategy(
+                "database system is ready to accept connections"
+            ).with_startup_timeout(60)
+        )
     )
     c.start()
     try:
-        wait_for_logs(c, "database system is ready to accept connections", timeout=60)
         host = c.get_container_host_ip()
         port = int(c.get_exposed_port(5432))
         dsn = f"postgresql://lab:lab@{host}:{port}/lab"

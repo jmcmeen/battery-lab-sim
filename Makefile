@@ -63,13 +63,17 @@ minio:  ## Open MinIO console in browser (http://localhost:9001)
 migrations:  ## Apply pending DB migrations
 	scripts/apply_migrations.sh
 
+.PHONY: parquet.export.now
+parquet.export.now:  ## Force-flush every complete hour to MinIO now (ignores PARQUET_EXPORT_AGE_HOURS); blocks until done
+	$(COMPOSE) exec -T parquet_export python -m parquet_export.main --now
+
 .PHONY: demo
 demo: $(ENV_FILE)  ## 16-channel × 5-cycle smoke test
 	$(MAKE) up
 	scripts/run_demo.sh
 
 .PHONY: soak.start
-soak.start: $(ENV_FILE)  ## Start a soak. Override: SCHEDULE=soak_45c CHASSIS=9 CHANNELS=16 make soak.start
+soak.start: $(ENV_FILE)  ## Start a soak. Pick schedule with SCHEDULE=soak_45c make soak.start; chassis/channels live in the YAML's bench: block
 	scripts/run_soak.sh
 
 .PHONY: soak.status

@@ -2,6 +2,29 @@
 
 All notable changes to the Battery Lab Simulator. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.1]
+
+### Changed
+
+- **Bench layout moves into schedule YAML.** Each schedule now declares a required `bench:` block (`chassis` as int / range string / list / comma-string + `channels_per_chassis`, both bounded by `MAX_CHASSIS=16` / `MAX_CHANNELS_PER_CHASSIS=32`). Replaces the broken `SOAK_DEFAULT_*` block in `.env` (Make and the bash runners never sourced `.env`, so those defaults silently fell through to `chassis=1`). Per CLAUDE.md invariant #4, experimental setup belongs with the schedule, not in deployment config — `experiments.schedule_git_sha` is now an honest record of which channels ran which protocol.
+- **`scripts/run_soak.sh` and `scripts/run_demo.sh`** read chassis + channels from the schedule's `bench:` block via the new `scripts/schedule_bench.py` helper. `expand_chassis()` and the `CHASSIS=` / `CHANNELS=` CLI overrides are gone — a different bench layout is a different schedule, not a flag.
+- **Existing schedules updated** with `bench:` blocks aligned to chamber temperature: `soak_25c` and `cycle_life_25C` → chassis 1-8 (Chamber A, 25 °C); `soak_45c` and `soak_accelerated` → 9-16 (Chamber B, 45 °C); `demo_5cycle` → chassis 1, 16 channels (matches the prior smoke-test footprint).
+- **Integration test fixtures** migrated from the deprecated `wait_for_logs(...)` to the structured `LogMessageWaitStrategy(...).with_startup_timeout(N)` API across `tests/integration/conftest.py`, `tests/integration/test_analytics_pipeline.py`, `tests/integration/test_grafana_provisioned.py`, `tests/integration/test_parquet_export.py`, and `tests/bench/conftest.py`. Zero deprecation warnings under `make test.integration`.
+
+### Added
+
+- **`make parquet.export.now`**: force-flushes every complete hour to MinIO immediately, ignoring `PARQUET_EXPORT_AGE_HOURS`. Wired through a new `--now` flag on `python -m parquet_export.main` that runs one `run_once(age_hours=0)` pass and exits — cutoff is `hour_floor(now)`, so the in-progress hour is excluded but every closed hour is fair game. Idempotent (`ON CONFLICT DO NOTHING`) and safe to run concurrently with the periodic loop. Refactored env loading into `_read_env` / `_bootstrap_s3` / `_dsn` helpers so both paths share configuration verbatim.
+- **Orchestrator unreachable-chassis guard.** New `_check_chassis_reachable` in `services/orchestrator/src/orchestrator/main.py` catches the operational gap that schema validation can't: pending experiments referencing a chassis the deployment can't reach are marked `failed` instead of sitting in `pending` forever. Per-chassis dedupe via a process-local `set[int]` keeps a queue of N bad rows from emitting N alerts — first failure for each `chassis_id` writes one critical alert. Per CLAUDE.md invariant #10, no actuator path back to the chassis.
+- **Test coverage**: `tests/unit/test_schedule_bench.py` (15 cases — chassis-spec normalization, range/list/comma parsing, MAX_CHASSIS bounds, required-on-`Schedule`, `extra="forbid"`); `tests/integration/test_orchestrator_unreachable.py` (5 bad rows for one chassis → 5 failed + 1 alert; second unreachable chassis → 1 more alert; reachable chassis untouched); `tests/integration/test_parquet_export.py::test_run_now_flushes_complete_hours_and_skips_in_progress` (locks the `age_hours=0` cutoff = `hour_floor(now)` semantic — closed hours export, in-progress hour rows survive in `telemetry`); `tests/unit/test_parquet_export_helpers.py::{test_read_env_defaults,test_read_env_overrides}` (pins documented env defaults and type casts).
+
+### Removed
+
+- **`SOAK_DEFAULT_*` block from `.env.example`** (and `.env`): `SOAK_DEFAULT_SCHEDULE`, `SOAK_DEFAULT_CHASSIS`, `SOAK_DEFAULT_CHANNELS`, plus the dead `SOAK_DEFAULT_TIMEOUT_HOURS` (a project-wide grep confirmed no reader). Bench-size knobs `CHANNELS_PER_CYCLER` and `NUM_CYCLERS` stay — they describe the deployment, not the experiment.
+
+### Fixed
+
+- **Silent `.env` fallthrough on `make soak.start`**: the runner's `${CHASSIS:-${SOAK_DEFAULT_CHASSIS:-1}}` pattern was always resolving to the hardcoded `1` because neither Make nor bash sourced `.env`. Resolved at the design level by moving these knobs into the schedule.
+
 ## [0.1.0] — initial release
 
 The full system as described in the [README](README.md): 16 simulated cyclers × 32 channels = 512 cells driven by a YAML-scheduled orchestrator, hot/cold telemetry tiers (TimescaleDB → Parquet on MinIO), streaming cycle analytics, a watchdog with durable alerting, three provisioned Grafana dashboards, and a chaos-engineering regression suite.

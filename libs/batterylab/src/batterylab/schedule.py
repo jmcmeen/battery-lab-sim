@@ -8,13 +8,22 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .errors import ScheduleError
 from .models import ChannelMode
+
+# Bench dimensions mirror the static deployment in docker-compose.yml: 16 cycler
+# services (cycler_01..cycler_16), each with CHANNELS_PER_CYCLER=32. They live
+# here (not as runtime-loaded env) because the docker-compose service list is
+# the actual deployment truth — NUM_CYCLERS in .env is documentation, not load-
+# bearing — and because schedule validation must run anywhere the lib runs
+# (CI, validate_schedules.py) without depending on a populated .env.
+MAX_CHASSIS = 16
+MAX_CHANNELS_PER_CHASSIS = 32
 
 
 class EndCondition(BaseModel):
@@ -73,6 +82,69 @@ class CycleConfig(BaseModel):
     repeat: int = Field(ge=1)
 
 
+class BenchConfig(BaseModel):
+    """Which slice of the deployed bench enrolls in this schedule.
+
+    `chassis` accepts a single int, a range string ("1-16"), a comma list
+    ("1,5,9"), or a YAML list ([1, 5, 9]). All four normalize to a sorted
+    unique ``list[int]`` bounded by MAX_CHASSIS, so a typo like ``"1-160"``
+    fails at schedule load instead of after queueing thousands of doomed
+    experiment rows.
+
+    Schedules are version-controlled (CLAUDE.md invariant #4); embedding
+    chassis + channel selection here makes ``schedule_git_sha`` a complete
+    record of what ran where.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    chassis: list[int]
+    channels_per_chassis: int = Field(ge=1, le=MAX_CHANNELS_PER_CHASSIS)
+
+    @field_validator("chassis", mode="before")
+    @classmethod
+    def _normalize(cls, v: Any) -> list[int]:
+        ids: list[int] = []
+        # Accept a single int as shorthand for [int].
+        if isinstance(v, int):
+            ids = [v]
+        # YAML list: pre-validate elements are ints (Pydantic would coerce
+        # strings like "1" silently, which masks malformed input).
+        elif isinstance(v, list):
+            for item in v:
+                if not isinstance(item, int) or isinstance(item, bool):
+                    raise ValueError(f"chassis list must contain ints, got {item!r}")
+            ids = list(v)
+        # String forms: "5", "1-16", "1,5,9", or combinations like "1,3-5,9".
+        elif isinstance(v, str):
+            for part in v.split(","):
+                part = part.strip()
+                if not part:
+                    raise ValueError(f"empty segment in chassis spec {v!r}")
+                if "-" in part:
+                    lo_s, hi_s = part.split("-", 1)
+                    if not (lo_s.isdigit() and hi_s.isdigit()):
+                        raise ValueError(f"bad range {part!r} in chassis spec {v!r}")
+                    lo, hi = int(lo_s), int(hi_s)
+                    if lo > hi:
+                        raise ValueError(f"inverted range {part!r} in chassis spec {v!r}")
+                    ids.extend(range(lo, hi + 1))
+                else:
+                    if not part.isdigit():
+                        raise ValueError(f"bad chassis id {part!r} in spec {v!r}")
+                    ids.append(int(part))
+        else:
+            raise ValueError(f"chassis must be int, list, or string; got {type(v).__name__}")
+
+        if not ids:
+            raise ValueError("chassis list is empty")
+        for cid in ids:
+            if cid < 1 or cid > MAX_CHASSIS:
+                raise ValueError(
+                    f"chassis id {cid} outside deployed range [1, {MAX_CHASSIS}]"
+                )
+        return sorted(set(ids))
+
+
 class ChamberConfig(BaseModel):
     """Thermal-chamber settings applied before the first cycle starts.
     ``soak_seconds`` is wall-equivalent dwell at ``setpoint_c`` to let the
@@ -94,6 +166,7 @@ class Schedule(BaseModel):
 
     schedule_id: str
     chemistry: str
+    bench: BenchConfig
     chamber: ChamberConfig = Field(default_factory=ChamberConfig)
     steps: list[Step]
     cycle: CycleConfig

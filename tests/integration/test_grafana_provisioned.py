@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 import requests
 from testcontainers.core.container import DockerContainer
-from testcontainers.core.waiting_utils import wait_for_logs
+from testcontainers.core.wait_strategies import LogMessageWaitStrategy
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PROVISIONING_DIR = REPO_ROOT / "grafana" / "provisioning"
@@ -51,10 +51,10 @@ def grafana_container() -> Iterator[str]:
         .with_volume_mapping(str(PROVISIONING_DIR), "/etc/grafana/provisioning", "ro")
         .with_volume_mapping(str(DASHBOARDS_DIR), "/var/lib/grafana/dashboards", "ro")
         .with_exposed_ports(3000)
+        .waiting_for(LogMessageWaitStrategy("HTTP Server Listen").with_startup_timeout(60))
     )
     c.start()
     try:
-        wait_for_logs(c, "HTTP Server Listen", timeout=60)
         host = c.get_container_host_ip()
         port = int(c.get_exposed_port(3000))
         base_url = f"http://{host}:{port}"

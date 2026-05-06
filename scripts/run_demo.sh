@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# 16-channel × 5-cycle smoke test.
-# Registers schedules/demo_5cycle.yaml, inserts 16 experiments on cycler_01
-# channels 0..15, waits until all are status='completed', asserts telemetry rows exist.
+# Smoke test: registers schedules/demo_5cycle.yaml, enrols its declared
+# bench (chassis × channels per the schedule's `bench:` block), waits for
+# completion, and asserts telemetry rows exist.
 set -euo pipefail
 
 COMPOSE="docker compose"
@@ -12,8 +12,20 @@ TSDB_DB="${TSDB_DB:-telemetry}"
 
 SCHEDULE_FILE="schedules/demo_5cycle.yaml"
 SCHEDULE_ID="demo_5cycle"
+
+# Read chassis list and channel count from the schedule's bench: block.
+eval "$(uv run python scripts/schedule_bench.py "$SCHEDULE_FILE")"
+read -ra CHASSIS_LIST <<< "$CHASSIS_LIST"
+LAST=$((CHANNELS - 1))
+CHASSIS_VALUES=$(printf '(%s),' "${CHASSIS_LIST[@]}")
+CHASSIS_VALUES="${CHASSIS_VALUES%,}"
+# Comma list for the telemetry IN(...) check below.
+CHASSIS_CSV=$(IFS=,; echo "${CHASSIS_LIST[*]}")
+
 GIT_SHA=$(git rev-parse HEAD:"$SCHEDULE_FILE" 2>/dev/null || echo "uncommitted")
 SCHEDULE_YAML=$(<"$SCHEDULE_FILE")
+
+echo "[demo] schedule=$SCHEDULE_ID chassis=${CHASSIS_LIST[*]} channels=$CHANNELS"
 
 # 1. Register schedule
 $COMPOSE exec -T postgres psql -v ON_ERROR_STOP=1 -U "$PG_USER" -d "$PG_DB" <<SQL
@@ -22,15 +34,19 @@ VALUES ('$SCHEDULE_ID', \$BODY\$$SCHEDULE_YAML\$BODY\$, '$GIT_SHA')
 ON CONFLICT (id) DO UPDATE SET body_yaml=EXCLUDED.body_yaml, git_sha=EXCLUDED.git_sha;
 SQL
 
-# 2. Insert 16 experiments (chassis_id=1, channel 0..15)
+# 2. Enrol experiments — chassis × channels per the schedule's bench block.
 $COMPOSE exec -T postgres psql -v ON_ERROR_STOP=1 -U "$PG_USER" -d "$PG_DB" <<SQL
+WITH chassis(id) AS (VALUES ${CHASSIS_VALUES})
 INSERT INTO experiments (id, chassis_id, channel_idx, schedule_id, schedule_git_sha, status)
-SELECT 'demo-' || lpad(g::text, 2, '0'), 1, g, '$SCHEDULE_ID', '$GIT_SHA', 'pending'
-FROM generate_series(0, 15) g
+SELECT 'demo-c' || c.id || '-ch' || lpad(g::text, 2, '0'),
+       c.id, g, '$SCHEDULE_ID', '$GIT_SHA', 'pending'
+  FROM chassis c
+ CROSS JOIN generate_series(0, ${LAST}) g
 ON CONFLICT (id) DO UPDATE SET status='pending', updated_at=now();
 SQL
 
-echo "[demo] 16 experiments queued. Waiting for completion (timeout 10 min wall)..."
+TOTAL=$((CHANNELS * ${#CHASSIS_LIST[@]}))
+echo "[demo] $TOTAL experiments queued. Waiting for completion (timeout 10 min wall)..."
 
 DEADLINE=$(( SECONDS + 600 ))
 while (( SECONDS < DEADLINE )); do
@@ -54,7 +70,7 @@ $COMPOSE exec -T postgres psql -U "$PG_USER" -d "$PG_DB" -c "
 
 rows=$($COMPOSE exec -T timescaledb psql -tA -U "$TSDB_USER" -d "$TSDB_DB" -c "
   SELECT count(*) FROM telemetry
-  WHERE chassis_id=1 AND channel_idx BETWEEN 0 AND 15
+  WHERE chassis_id IN ($CHASSIS_CSV) AND channel_idx BETWEEN 0 AND $LAST
     AND time > now() - INTERVAL '15 minutes'
 ")
 rows=${rows//[[:space:]]/}

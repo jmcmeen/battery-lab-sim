@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from batterylab.chemistry import CHEMISTRIES, ChemistryParams, get_chemistry
 from batterylab.schedule import (
+    BenchConfig,
     CCStep,
     CVStep,
     CycleConfig,
@@ -83,6 +84,7 @@ def schedule_strategy(draw: st.DrawFn) -> Schedule:
             )
         ),
         chemistry=chem_name,
+        bench=BenchConfig(chassis=[1], channels_per_chassis=1),
         steps=steps,
         cycle=CycleConfig(repeat=draw(st.integers(min_value=1, max_value=10))),
     )

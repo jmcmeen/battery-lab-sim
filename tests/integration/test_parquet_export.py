@@ -19,7 +19,7 @@ import asyncpg
 import pyarrow.parquet as pq
 import pytest
 from testcontainers.core.container import DockerContainer
-from testcontainers.core.waiting_utils import wait_for_logs
+from testcontainers.core.wait_strategies import LogMessageWaitStrategy
 
 
 @pytest.fixture(scope="session")
@@ -31,10 +31,10 @@ def minio_container() -> Iterator[tuple[str, str, str]]:
         .with_env("MINIO_ROOT_USER", "admin")
         .with_env("MINIO_ROOT_PASSWORD", "admin12345")
         .with_exposed_ports(9000)
+        .waiting_for(LogMessageWaitStrategy("API:").with_startup_timeout(30))
     )
     c.start()
     try:
-        wait_for_logs(c, "API:", timeout=30)
         host = c.get_container_host_ip()
         port = int(c.get_exposed_port(9000))
         yield (f"{host}:{port}", "admin", "admin12345")
@@ -156,5 +156,106 @@ async def test_export_pass_writes_parquet_and_drops_chunks(
         summary2 = await run_once(pool, s3, bucket, age_hours=1)
         assert summary2["exported_hours"] == 0
         assert summary2["total_rows"] == 0
+    finally:
+        await pool.close()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_run_now_flushes_complete_hours_and_skips_in_progress(
+    tsdb_container: str, minio_container: tuple[str, str, str]
+) -> None:
+    """``--now`` semantics: ``age_hours=0`` flushes every closed hour but must
+    leave the in-progress hour alone. Cutoff is ``hour_floor(now)`` and the
+    pending-hours query filters ``time < cutoff`` — verify that boundary by
+    seeding telemetry in two complete hours plus the current hour and
+    asserting only the closed hours land in MinIO and ``parquet_exports``.
+    """
+    from parquet_export.main import run_once
+    from parquet_export.s3 import make_s3_filesystem
+
+    endpoint, access, secret = minio_container
+    bucket = "lab-archive-now"
+
+    # Cleanup — see the sibling test for rationale (session-scoped fixtures).
+    cleanup_pool = await asyncpg.create_pool(tsdb_container, min_size=1, max_size=2)
+    try:
+        async with cleanup_pool.acquire() as conn:
+            await conn.execute("TRUNCATE TABLE telemetry")
+            await conn.execute("TRUNCATE TABLE parquet_exports")
+    finally:
+        await cleanup_pool.close()
+
+    now = datetime.now(UTC)
+    current_hour_start = now.replace(minute=0, second=0, microsecond=0)
+    h_minus_2 = current_hour_start - timedelta(hours=2)
+    h_minus_1 = current_hour_start - timedelta(hours=1)
+
+    await _seed_telemetry(tsdb_container, h_minus_2)
+    await _seed_telemetry(tsdb_container, h_minus_1)
+    # In-progress hour: seed at minute=00 .. so the rows land inside the
+    # current hour even though the wall clock is past minute 0. Use a
+    # 5-second window to stay safely inside any sane current minute.
+    in_progress_pool = await asyncpg.create_pool(tsdb_container, min_size=1, max_size=2)
+    try:
+        rows = [
+            (
+                current_hour_start + timedelta(seconds=i),
+                1, 0, "schedule_x", 0, "cc_charge",
+                3.7, 1.5, 25.0, 0.5,
+            )
+            for i in range(5)
+        ]
+        async with in_progress_pool.acquire() as conn:
+            await conn.copy_records_to_table(
+                "telemetry",
+                records=rows,
+                columns=[
+                    "time", "chassis_id", "channel_idx", "schedule_id",
+                    "cycle_index", "step_name", "voltage_v", "current_a",
+                    "temperature_c", "soc_est",
+                ],
+            )
+    finally:
+        await in_progress_pool.close()
+
+    s3 = make_s3_filesystem(endpoint, access, secret)
+    s3.create_dir(bucket, recursive=True)
+
+    pool = await asyncpg.create_pool(tsdb_container, min_size=1, max_size=2)
+    try:
+        # 2 complete hours × 60 sec × 2 channels + 5 in-progress = 245
+        seeded = await pool.fetchval("SELECT count(*) FROM telemetry")
+        assert seeded == 245
+
+        summary = await run_once(pool, s3, bucket, age_hours=0)
+        assert summary["exported_hours"] == 2, (
+            f"expected 2 closed hours exported, got {summary['exported_hours']}"
+        )
+        assert summary["total_rows"] == 240  # the closed hours, not the 5 in-progress
+
+        # parquet_exports must contain exactly the two closed hours.
+        export_rows = await pool.fetch(
+            "SELECT hour_start FROM parquet_exports ORDER BY hour_start"
+        )
+        recorded = {r["hour_start"] for r in export_rows}
+        assert recorded == {h_minus_2, h_minus_1}, (
+            f"parquet_exports must hold the two closed hours, got {recorded}"
+        )
+        assert current_hour_start not in recorded, (
+            "in-progress hour must not be recorded — it can still receive late writes"
+        )
+
+        # The in-progress hour's rows must still be in telemetry. Closed-hour
+        # chunks were dropped, but `drop_chunks` cutoff is hour_floor(now), so
+        # the current hour's chunk survives.
+        remaining = await pool.fetchval("SELECT count(*) FROM telemetry")
+        assert remaining == 5, (
+            f"in-progress hour rows must survive (got {remaining}, expected 5)"
+        )
+        in_progress_count = await pool.fetchval(
+            "SELECT count(*) FROM telemetry WHERE time >= $1", current_hour_start
+        )
+        assert in_progress_count == 5
     finally:
         await pool.close()

@@ -142,10 +142,52 @@ async def _build_experiment(pool: asyncpg.Pool, rec: asyncpg.Record) -> ex.Exper
     )
 
 
+async def _check_chassis_reachable(
+    pool: asyncpg.Pool,
+    cyclers_by_id: dict[int, CyclerClient],
+    alerted: set[int],
+    exp_id: str,
+    chassis_id: int,
+    channel_idx: int,
+) -> bool:
+    """True if ``chassis_id`` maps to a connected cycler; otherwise mark the
+    experiment failed and (once per unique chassis_id this process lifetime)
+    emit a critical alert.
+
+    Catches the operational gap that schedule schema validation can't:
+    rows whose chassis_id exceeds the deployed bench (someone hand-INSERTed,
+    or the bench shrank without the queue draining). Without this, those
+    rows sit in 'pending' silently forever. Per CLAUDE.md invariant #10,
+    only state + alert here — no actuator path to a chassis we can't reach.
+    The ``alerted`` set is process-local so a queue of N bad rows for the
+    same chassis emits one alert, not N.
+    """
+    if chassis_id in cyclers_by_id:
+        return True
+    log.error(
+        "unreachable_chassis",
+        experiment_id=exp_id,
+        chassis_id=chassis_id,
+        known=sorted(cyclers_by_id.keys()),
+    )
+    await ex.mark_experiment_status(pool, exp_id, "failed")
+    if chassis_id not in alerted:
+        alerted.add(chassis_id)
+        await _emit_critical_alert(
+            pool,
+            source="orchestrator",
+            message="unreachable_chassis_in_pending_experiment",
+            chassis_id=chassis_id,
+            channel_idx=channel_idx,
+        )
+    return False
+
+
 async def _executor_loop(
     pool: asyncpg.Pool,
     cyclers_by_id: dict[int, CyclerClient],
     experiments: dict[str, ex.Experiment],
+    alerted_unreachable: set[int],
     stop: asyncio.Event,
 ) -> None:
     """Main orchestration loop: poll → kickoff new → tick running → reap.
@@ -158,26 +200,30 @@ async def _executor_loop(
         # Pick up any newly-inserted pending experiments.
         new_recs = await _poll_pending(pool, experiments)
         for rec in new_recs:
+            if not await _check_chassis_reachable(
+                pool,
+                cyclers_by_id,
+                alerted_unreachable,
+                rec["id"],
+                rec["chassis_id"],
+                rec["channel_idx"],
+            ):
+                continue
             built = await _build_experiment(pool, rec)
             if built is None:
                 continue
-            cycler = cyclers_by_id.get(built.chassis_id)
-            if cycler is None:
-                log.error("no_cycler_for_chassis", chassis_id=built.chassis_id)
-                await ex.mark_experiment_status(pool, built.id, "failed")
-                continue
-            await ex.kickoff(pool, cycler, built)
+            await ex.kickoff(pool, cyclers_by_id[built.chassis_id], built)
             experiments[built.id] = built
 
         # Tick each running experiment.
         for exp in list(experiments.values()):
             if exp.status != "running":
                 continue
-            cycler = cyclers_by_id.get(exp.chassis_id)
-            if cycler is None:
+            tick_cycler = cyclers_by_id.get(exp.chassis_id)
+            if tick_cycler is None:
                 continue
             try:
-                await ex.step_one_tick(pool, cycler, exp)
+                await ex.step_one_tick(pool, tick_cycler, exp)
             except OSError as e:
                 log.warning("tick_io_error", experiment_id=exp.id, error=str(e))
 
@@ -227,7 +273,9 @@ async def _poll_pending(
 
 
 async def _resume_inflight(
-    pool: asyncpg.Pool, cyclers_by_id: dict[int, CyclerClient]
+    pool: asyncpg.Pool,
+    cyclers_by_id: dict[int, CyclerClient],
+    alerted_unreachable: set[int],
 ) -> dict[str, ex.Experiment]:
     """For every running experiment in DB, decide resume vs. fail by reading channel state."""
     out: dict[str, ex.Experiment] = {}
@@ -235,14 +283,19 @@ async def _resume_inflight(
     for rec in recs:
         if rec["status"] != "running":
             continue
+        if not await _check_chassis_reachable(
+            pool,
+            cyclers_by_id,
+            alerted_unreachable,
+            rec["id"],
+            rec["chassis_id"],
+            rec["channel_idx"],
+        ):
+            continue
         exp = await _build_experiment(pool, rec)
         if exp is None:
             continue
-        cycler = cyclers_by_id.get(exp.chassis_id)
-        if cycler is None:
-            log.error("no_cycler_for_chassis_on_resume", chassis_id=exp.chassis_id)
-            await ex.mark_experiment_status(pool, exp.id, "failed")
-            continue
+        cycler = cyclers_by_id[exp.chassis_id]
 
         snap = await cycler.read_channel(exp.channel_idx)
         if snap.last_error != ErrorCode.NONE:
@@ -408,9 +461,15 @@ async def _run() -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop.set)
 
+    # Process-local: which chassis ids have already produced an
+    # "unreachable" alert in this lifetime. Bounded by MAX_CHASSIS, so it's
+    # tiny — and it lives across resume + executor so a chassis that's
+    # bad on resume doesn't re-alert on every executor poll.
+    alerted_unreachable: set[int] = set()
+
     async with asyncpg.create_pool(dsn, min_size=1, max_size=8) as pool:
         # Resume any in-flight experiments before kicking off pending.
-        experiments = await _resume_inflight(pool, cyclers_by_id)
+        experiments = await _resume_inflight(pool, cyclers_by_id, alerted_unreachable)
         log.info("resumed", count=len(experiments))
 
         # Master-side arming handshake. Each chassis dead-man is live the
@@ -431,7 +490,9 @@ async def _run() -> None:
             tg.create_task(heartbeat_loop(cyclers, mqtt_host, mqtt_port))
             tg.create_task(event_publisher_loop(mqtt_host, mqtt_port))
             tg.create_task(context_publisher_loop(mqtt_host, mqtt_port))
-            tg.create_task(_executor_loop(pool, cyclers_by_id, experiments, stop))
+            tg.create_task(
+                _executor_loop(pool, cyclers_by_id, experiments, alerted_unreachable, stop)
+            )
 
             await stop.wait()
             log.info("orchestrator_stopping")
