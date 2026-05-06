@@ -4,8 +4,10 @@
 # Run the default schedule:
 #     make soak.start
 #
-# Pick a different schedule:
+# Pick a different schedule (any of these forms work):
 #     SCHEDULE=soak_45c make soak.start
+#     SCHEDULE=soak_45c.yaml make soak.start
+#     SCHEDULE=schedules/soak_45c.yaml make soak.start
 #
 # Chassis range and channels-per-chassis are read from the schedule's `bench:`
 # block (see schedules/soak_25c.yaml). To run a different bench layout, copy
@@ -23,6 +25,10 @@ PG_USER="${POSTGRES_USER:-lab}"
 PG_DB="${POSTGRES_DB:-lab}"
 
 SCHEDULE="${SCHEDULE:-soak_25c}"
+# Accept "soak_45c" / "soak_45c.yaml" / "schedules/soak_45c.yaml" interchangeably:
+# strip a leading schedules/ and a trailing .yaml, then re-apply the canonical wrapping.
+SCHEDULE="${SCHEDULE#schedules/}"
+SCHEDULE="${SCHEDULE%.yaml}"
 SCHEDULE_FILE="schedules/${SCHEDULE}.yaml"
 [[ -f "$SCHEDULE_FILE" ]] || { echo "[soak] schedule not found: $SCHEDULE_FILE" >&2; exit 1; }
 

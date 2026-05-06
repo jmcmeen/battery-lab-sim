@@ -2,6 +2,13 @@
 
 All notable changes to the Battery Lab Simulator. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.2]
+
+### Fixed
+
+- **`scripts/run_soak.sh` accepts the schedule in any natural form**: `soak_45c`, `soak_45c.yaml`, or `schedules/soak_45c.yaml`. Previously the path forms produced `schedules/schedules/soak_45c.yaml.yaml` and a confusing not-found error — the script wrapped its input as `schedules/${SCHEDULE}.yaml` without first stripping a possible prefix/suffix.
+- **`make demo SCHEDULE=…` actually honours the override now.** Previously the Makefile recipe called `scripts/run_demo.sh`, which hardcoded `schedules/demo_5cycle.yaml` and silently ignored the env var — making the [CLAUDE.md](CLAUDE.md) "Add a new schedule" recipe step 4 (smoke-test your new schedule via `make demo`) a no-op. `run_demo.sh` now reads `SCHEDULE` with the same normalization as the soak runner, and namespaces enrolled experiment IDs by schedule (`demo-<schedule_id>-cN-chXX`) so successive demo runs across different schedules don't share IDs.
+
 ## [0.1.1]
 
 ### Changed
