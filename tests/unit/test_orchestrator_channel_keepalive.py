@@ -66,11 +66,16 @@ async def _run_one_iteration(
     if the implementation gained additional ``await`` points.
     """
     sweep_done = asyncio.Event()
+    # Sentinel event that's never set — fake_sleep awaits it to park the
+    # keepalive at the "end of sweep" boundary until the test cancels.
+    # Without this hold, fake_sleep would return immediately, the keepalive
+    # would loop into a second sweep before our cancel lands, and channels
+    # would get kicked twice.
+    forever = asyncio.Event()
 
     async def fake_sleep(_period: float) -> None:
         sweep_done.set()
-        # Yield once so the cancel below can interrupt before the next sweep.
-        await asyncio.sleep(0)
+        await forever.wait()
 
     # Patching the class object — the import in channel_keepalive resolves
     # to the same SimTime, so this affects the loop's await SimTime.sleep().
