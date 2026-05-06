@@ -1,5 +1,8 @@
 schedule_id: demo_5cycle
 chemistry: NMC
+bench:
+  chassis: 1                 # smoke test runs on cycler_01 only
+  channels_per_chassis: 16
 chamber:
   setpoint_c: 25.0
   soak_seconds: 0

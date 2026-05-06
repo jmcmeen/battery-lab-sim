@@ -22,6 +22,9 @@ from batterylab.schedule import Schedule
 SCHEDULE_YAML = """\
 schedule_id: drift_test_v1
 chemistry: NMC
+bench:
+  chassis: 1
+  channels_per_chassis: 8
 chamber:
   setpoint_c: 25.0
   soak_seconds: 0
@@ -88,7 +91,7 @@ async def test_resume_drift_re_issues_command(postgres_metadata: str, cycler_run
         pool = await asyncpg.create_pool(postgres_metadata, min_size=1, max_size=2)
         try:
             cyclers_by_id = {1: cycler}
-            out = await _resume_inflight(pool, cyclers_by_id)
+            out = await _resume_inflight(pool, cyclers_by_id, alerted_unreachable=set())
 
             # First drift: experiment must still be active and counted.
             assert exp_id in out

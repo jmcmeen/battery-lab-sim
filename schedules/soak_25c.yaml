@@ -1,5 +1,8 @@
 schedule_id: soak_25c
 chemistry: NMC
+bench:
+  chassis: 1-8               # Chamber A is 25 °C → cyclers 01-08 (docker-compose.yml)
+  channels_per_chassis: 32
 chamber:
   setpoint_c: 25.0
   soak_seconds: 1800        # 30-minute initial chamber soak before cycling

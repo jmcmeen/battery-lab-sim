@@ -5,6 +5,9 @@ chemistry: NMC
 # would normally take ~500 cycles at moderate rates into ~50 cycles. Use
 # this for a 1-hour bench-readiness run when you need visible degradation
 # but can't soak for days.
+bench:
+  chassis: 9-16              # 45 °C accelerated → Chamber B (cyclers 09-16)
+  channels_per_chassis: 32
 chamber:
   setpoint_c: 45.0
   soak_seconds: 600

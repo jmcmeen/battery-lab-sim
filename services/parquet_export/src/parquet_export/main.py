@@ -13,9 +13,11 @@ correct after re-upload — same rows, same path).
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import os
 import signal
+import sys
 from datetime import UTC, datetime, timedelta
 
 import asyncpg
@@ -78,62 +80,132 @@ async def run_once(pool: asyncpg.Pool, s3, bucket: str, age_hours: int) -> dict:
     }
 
 
+def _read_env() -> dict:
+    """Read service env vars once. Shared between the long-running loop and
+    the ``--now`` one-shot so both pick up identical TSDB/MinIO config."""
+    return {
+        "tsdb_host": os.environ.get("TSDB_HOST", "timescaledb"),
+        "tsdb_port": int(os.environ.get("TSDB_PORT", "5432")),
+        "tsdb_user": os.environ.get("TSDB_USER", "lab"),
+        "tsdb_pw": os.environ.get("TSDB_PASSWORD", "lab"),
+        "tsdb_db": os.environ.get("TSDB_DB", "telemetry"),
+        "minio_endpoint": os.environ.get("MINIO_ENDPOINT", "minio:9000"),
+        "minio_access": os.environ.get("MINIO_ACCESS_KEY", "admin"),
+        "minio_secret": os.environ.get("MINIO_SECRET_KEY", "admin12345"),
+        "bucket": os.environ.get("PARQUET_BUCKET", "lab-archive"),
+        "age_hours": int(os.environ.get("PARQUET_EXPORT_AGE_HOURS", "24")),
+        "period_s": float(os.environ.get("PARQUET_EXPORT_PERIOD_S", "3600")),
+    }
+
+
+def _bootstrap_s3(cfg: dict):
+    """Construct the S3 filesystem and ensure the bucket exists. Best-effort
+    create — re-runs are no-ops, and a failure here doesn't stop a pass
+    (the export's own write call will surface a real error)."""
+    s3 = make_s3_filesystem(cfg["minio_endpoint"], cfg["minio_access"], cfg["minio_secret"])
+    try:
+        s3.create_dir(cfg["bucket"], recursive=True)
+    except OSError as e:
+        log.warning("bucket_create_skipped", bucket=cfg["bucket"], error=str(e))
+    return s3
+
+
+def _dsn(cfg: dict) -> str:
+    return (
+        f"postgresql://{cfg['tsdb_user']}:{cfg['tsdb_pw']}"
+        f"@{cfg['tsdb_host']}:{cfg['tsdb_port']}/{cfg['tsdb_db']}"
+    )
+
+
 async def _run() -> None:
     """Async main: bootstrap MinIO bucket, then loop ``run_once`` every
     ``PARQUET_EXPORT_PERIOD_S`` until shutdown. DB errors during a pass
     are logged and the loop continues — transient TSDB hiccups must not
     crash the long-running exporter."""
     configure_log()
-    tsdb_host = os.environ.get("TSDB_HOST", "timescaledb")
-    tsdb_port = int(os.environ.get("TSDB_PORT", "5432"))
-    tsdb_user = os.environ.get("TSDB_USER", "lab")
-    tsdb_pw = os.environ.get("TSDB_PASSWORD", "lab")
-    tsdb_db = os.environ.get("TSDB_DB", "telemetry")
-    minio_endpoint = os.environ.get("MINIO_ENDPOINT", "minio:9000")
-    minio_access = os.environ.get("MINIO_ACCESS_KEY", "admin")
-    minio_secret = os.environ.get("MINIO_SECRET_KEY", "admin12345")
-    bucket = os.environ.get("PARQUET_BUCKET", "lab-archive")
-    age_hours = int(os.environ.get("PARQUET_EXPORT_AGE_HOURS", "24"))
-    period_s = float(os.environ.get("PARQUET_EXPORT_PERIOD_S", "3600"))
+    cfg = _read_env()
 
     log.info(
         "parquet_export_starting",
-        tsdb=f"{tsdb_user}@{tsdb_host}:{tsdb_port}/{tsdb_db}",
-        minio=minio_endpoint,
-        bucket=bucket,
-        age_hours=age_hours,
-        period_s=period_s,
+        tsdb=f"{cfg['tsdb_user']}@{cfg['tsdb_host']}:{cfg['tsdb_port']}/{cfg['tsdb_db']}",
+        minio=cfg["minio_endpoint"],
+        bucket=cfg["bucket"],
+        age_hours=cfg["age_hours"],
+        period_s=cfg["period_s"],
     )
 
-    s3 = make_s3_filesystem(minio_endpoint, minio_access, minio_secret)
-    # Best-effort bucket bootstrap. mkdir is a no-op if the bucket exists.
-    try:
-        s3.create_dir(bucket, recursive=True)
-    except OSError as e:
-        log.warning("bucket_create_skipped", bucket=bucket, error=str(e))
+    s3 = _bootstrap_s3(cfg)
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop.set)
 
-    dsn = f"postgresql://{tsdb_user}:{tsdb_pw}@{tsdb_host}:{tsdb_port}/{tsdb_db}"
-    async with asyncpg.create_pool(dsn, min_size=1, max_size=4) as pool:
+    async with asyncpg.create_pool(_dsn(cfg), min_size=1, max_size=4) as pool:
         while not stop.is_set():
             try:
-                summary = await run_once(pool, s3, bucket, age_hours)
+                summary = await run_once(pool, s3, cfg["bucket"], cfg["age_hours"])
                 log.info("export_pass_complete", **summary)
             except asyncpg.PostgresError as e:
                 log.error("export_pass_failed", error=str(e))
             try:
-                await asyncio.wait_for(stop.wait(), timeout=period_s)
+                await asyncio.wait_for(stop.wait(), timeout=cfg["period_s"])
             except TimeoutError:
                 pass
 
 
+async def _run_now() -> dict:
+    """One-shot pass for ``--now``: flush every complete hour that hasn't
+    been exported yet, regardless of ``PARQUET_EXPORT_AGE_HOURS``.
+
+    Cutoff is ``hour_floor(now)``, so the in-progress hour is excluded
+    (an unfinished hour can still receive late writes) but every closed
+    hour is fair game. Concurrent with the periodic loop is safe — both
+    paths land on the same ``ON CONFLICT DO NOTHING`` insert and rewrite
+    identical S3 objects under the same hive path.
+    """
+    configure_log()
+    cfg = _read_env()
+    log.info(
+        "parquet_export_now_starting",
+        tsdb=f"{cfg['tsdb_user']}@{cfg['tsdb_host']}:{cfg['tsdb_port']}/{cfg['tsdb_db']}",
+        minio=cfg["minio_endpoint"],
+        bucket=cfg["bucket"],
+    )
+    s3 = _bootstrap_s3(cfg)
+    async with asyncpg.create_pool(_dsn(cfg), min_size=1, max_size=4) as pool:
+        summary = await run_once(pool, s3, cfg["bucket"], age_hours=0)
+    log.info("parquet_export_now_complete", **summary)
+    return summary
+
+
 def main() -> None:
-    """Sync entry point — starts the asyncio loop and absorbs cancel signals."""
+    """Sync entry point.
+
+    Default: long-running loop (the service container's CMD).
+    ``--now``:  one-shot pass that flushes complete hours and exits.
+    """
+    parser = argparse.ArgumentParser(prog="parquet_export.main")
+    parser.add_argument(
+        "--now",
+        action="store_true",
+        help=(
+            "Flush every complete hour that hasn't been exported yet, then exit. "
+            "Ignores PARQUET_EXPORT_AGE_HOURS. The in-progress hour is excluded."
+        ),
+    )
+    args = parser.parse_args()
+
     try:
+        if args.now:
+            summary = asyncio.run(_run_now())
+            # One-line human-readable summary on stdout for the make target.
+            print(
+                f"[parquet.export.now] exported_hours={summary['exported_hours']} "
+                f"rows={summary['total_rows']} bytes={summary['total_bytes']} "
+                f"chunks_dropped={summary['chunks_dropped']}"
+            )
+            sys.exit(0)
         asyncio.run(_run())
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass

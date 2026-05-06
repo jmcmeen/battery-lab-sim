@@ -137,12 +137,8 @@ services:
     ports: ["3000:3000"]
     environment:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
-      # Anonymous mode disabled: with it on, Grafana's frontend tries to hit
-      # /api/user/preferences and /api/live/ws using the session token an
-      # anonymous user doesn't have, and pops an "Unauthorized" toast on
-      # every page load. Logging in (default admin/admin) gives a real
-      # session and the toasts stop.
-      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
       # Datasource provisioning reads ${VAR} interpolation from env, so
       # forward DB credentials so the YAML can stay generic.
       TSDB_USER: ${TSDB_USER:-lab}

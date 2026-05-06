@@ -1,5 +1,8 @@
 schedule_id: cycle_life_25C
 chemistry: NMC
+bench:
+  chassis: 1-8               # 25 °C cycle-life run → Chamber A (cyclers 01-08)
+  channels_per_chassis: 32
 chamber:
   setpoint_c: 25.0
   soak_seconds: 0          # chamber control not yet wired in this milestone

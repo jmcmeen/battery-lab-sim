@@ -108,6 +108,7 @@ def test_duplicate_step_names_rejected() -> None:
     raw = {
         "schedule_id": "x",
         "chemistry": "NMC",
+        "bench": {"chassis": 1, "channels_per_chassis": 1},
         "steps": [
             {"name": "a", "type": "rest", "duration_s": 10},
             {"name": "a", "type": "rest", "duration_s": 10},

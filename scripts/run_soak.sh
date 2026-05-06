@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# Soak runner — registers a schedule and enrols N channels on one or more chassis.
+# Soak runner — registers a schedule and enrols its declared chassis × channels.
 #
-# Defaults come from .env (SOAK_DEFAULT_*); flags override:
-#   SCHEDULE=soak_45c CHASSIS=9 CHANNELS=16 ./scripts/run_soak.sh
+# Run the default schedule:
+#     make soak.start
 #
-# CHASSIS accepts:
-#   - a single id:    CHASSIS=5
-#   - a range:        CHASSIS=1-16
-#   - a comma list:   CHASSIS=1,5,9
+# Pick a different schedule:
+#     SCHEDULE=soak_45c make soak.start
+#
+# Chassis range and channels-per-chassis are read from the schedule's `bench:`
+# block (see schedules/soak_25c.yaml). To run a different bench layout, copy
+# the schedule and edit its bench: — that way `experiments.schedule_git_sha`
+# stays an honest record of which channels ran which protocol.
 #
 # Unlike scripts/run_demo.sh, this does NOT wait for completion — soaks
 # run for hours/days. It returns once experiments are queued and the
@@ -19,35 +22,15 @@ COMPOSE="docker compose"
 PG_USER="${POSTGRES_USER:-lab}"
 PG_DB="${POSTGRES_DB:-lab}"
 
-SCHEDULE="${SCHEDULE:-${SOAK_DEFAULT_SCHEDULE:-soak_25c}}"
-CHASSIS_SPEC="${CHASSIS:-${SOAK_DEFAULT_CHASSIS:-1}}"
-CHANNELS="${CHANNELS:-${SOAK_DEFAULT_CHANNELS:-32}}"
-
-# Expand CHASSIS_SPEC into a flat list of integers. Supports single ids,
-# `start-end` ranges, and comma-separated combinations of both.
-expand_chassis() {
-    local spec="$1" out=() part start end
-    IFS=',' read -ra parts <<< "$spec"
-    for part in "${parts[@]}"; do
-        if [[ "$part" =~ ^([0-9]+)-([0-9]+)$ ]]; then
-            start="${BASH_REMATCH[1]}"
-            end="${BASH_REMATCH[2]}"
-            (( start <= end )) || { echo "[soak] bad range: $part" >&2; exit 2; }
-            for ((i=start; i<=end; i++)); do out+=("$i"); done
-        elif [[ "$part" =~ ^[0-9]+$ ]]; then
-            out+=("$part")
-        else
-            echo "[soak] bad chassis spec: $part (want N, N-M, or N,M,...)" >&2
-            exit 2
-        fi
-    done
-    printf '%s\n' "${out[@]}"
-}
-
-mapfile -t CHASSIS_LIST < <(expand_chassis "$CHASSIS_SPEC")
-
+SCHEDULE="${SCHEDULE:-soak_25c}"
 SCHEDULE_FILE="schedules/${SCHEDULE}.yaml"
 [[ -f "$SCHEDULE_FILE" ]] || { echo "[soak] schedule not found: $SCHEDULE_FILE" >&2; exit 1; }
+
+# Read chassis list and channel count from the schedule's bench: block.
+# schedule_bench.py validates against MAX_CHASSIS / MAX_CHANNELS_PER_CHASSIS,
+# so an out-of-range typo fails here, before we touch postgres.
+eval "$(uv run python scripts/schedule_bench.py "$SCHEDULE_FILE")"
+read -ra CHASSIS_LIST <<< "$CHASSIS_LIST"
 
 GIT_SHA=$(git rev-parse HEAD:"$SCHEDULE_FILE" 2>/dev/null || echo "uncommitted")
 SCHEDULE_YAML=$(<"$SCHEDULE_FILE")
@@ -61,7 +44,7 @@ VALUES ('$SCHEDULE', \$BODY\$$SCHEDULE_YAML\$BODY\$, '$GIT_SHA')
 ON CONFLICT (id) DO UPDATE SET body_yaml=EXCLUDED.body_yaml, git_sha=EXCLUDED.git_sha;
 SQL
 
-# 2. Enrol N experiments on every requested chassis in one round-trip.
+# 2. Enrol N experiments on every chassis from the schedule in one round-trip.
 # Idempotent — re-running with status='pending' resets channels that
 # previously failed/completed.
 LAST=$((CHANNELS - 1))
