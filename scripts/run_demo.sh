@@ -10,20 +10,15 @@
 #     SCHEDULE=schedules/my_new.yaml make demo
 set -euo pipefail
 
+source "$(dirname "$0")/_schedule.sh"
+
 COMPOSE="docker compose"
 PG_USER="${POSTGRES_USER:-lab}"
 PG_DB="${POSTGRES_DB:-lab}"
 TSDB_USER="${TSDB_USER:-lab}"
 TSDB_DB="${TSDB_DB:-telemetry}"
 
-SCHEDULE="${SCHEDULE:-demo_5cycle}"
-# Accept "demo_5cycle" / "demo_5cycle.yaml" / "schedules/demo_5cycle.yaml"
-# interchangeably — strip a leading schedules/ and trailing .yaml, then re-wrap.
-SCHEDULE="${SCHEDULE#schedules/}"
-SCHEDULE="${SCHEDULE%.yaml}"
-SCHEDULE_FILE="schedules/${SCHEDULE}.yaml"
-SCHEDULE_ID="${SCHEDULE}"
-[[ -f "$SCHEDULE_FILE" ]] || { echo "[demo] schedule not found: $SCHEDULE_FILE" >&2; exit 1; }
+resolve_schedule "${SCHEDULE:-demo_5cycle}" demo
 
 # Read chassis list and channel count from the schedule's bench: block.
 eval "$(uv run python scripts/schedule_bench.py "$SCHEDULE_FILE")"
@@ -64,7 +59,7 @@ DEADLINE=$(( SECONDS + 600 ))
 while (( SECONDS < DEADLINE )); do
   remaining=$($COMPOSE exec -T postgres psql -tA -U "$PG_USER" -d "$PG_DB" -c "
     SELECT count(*) FROM experiments
-    WHERE id LIKE 'demo-${SCHEDULE_ID}-%' AND status NOT IN ('completed','failed')
+    WHERE id LIKE 'demo-%' AND schedule_id = '$SCHEDULE_ID' AND status NOT IN ('completed','failed')
   ")
   remaining=${remaining//[[:space:]]/}
   if [[ "$remaining" == "0" ]]; then
@@ -77,7 +72,7 @@ done
 # 3. Assert outcomes
 $COMPOSE exec -T postgres psql -U "$PG_USER" -d "$PG_DB" -c "
   SELECT status, count(*) FROM experiments
-  WHERE id LIKE 'demo-${SCHEDULE_ID}-%' GROUP BY status ORDER BY status;
+  WHERE id LIKE 'demo-%' AND schedule_id = '$SCHEDULE_ID' GROUP BY status ORDER BY status;
 "
 
 rows=$($COMPOSE exec -T timescaledb psql -tA -U "$TSDB_USER" -d "$TSDB_DB" -c "
@@ -90,7 +85,7 @@ echo "[demo] telemetry rows in last 15 min: $rows"
 [[ "$rows" -gt 0 ]] || { echo "[demo] FAIL: no telemetry"; exit 1; }
 
 failed=$($COMPOSE exec -T postgres psql -tA -U "$PG_USER" -d "$PG_DB" -c "
-  SELECT count(*) FROM experiments WHERE id LIKE 'demo-${SCHEDULE_ID}-%' AND status != 'completed'
+  SELECT count(*) FROM experiments WHERE id LIKE 'demo-%' AND schedule_id = '$SCHEDULE_ID' AND status != 'completed'
 ")
 failed=${failed//[[:space:]]/}
 [[ "$failed" == "0" ]] || { echo "[demo] FAIL: $failed experiments did not complete"; exit 1; }
