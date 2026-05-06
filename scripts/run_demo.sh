@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
-# Smoke test: registers schedules/demo_5cycle.yaml, enrols its declared
-# bench (chassis × channels per the schedule's `bench:` block), waits for
-# completion, and asserts telemetry rows exist.
+# Smoke test: registers a schedule, enrols its declared bench (chassis ×
+# channels per the schedule's `bench:` block), waits for completion, and
+# asserts telemetry rows exist.
+#
+# Default schedule is demo_5cycle; override to smoke-test a new schedule
+# (any of these forms work, mirroring scripts/run_soak.sh):
+#     SCHEDULE=my_new make demo
+#     SCHEDULE=my_new.yaml make demo
+#     SCHEDULE=schedules/my_new.yaml make demo
 set -euo pipefail
+
+source "$(dirname "$0")/_schedule.sh"
 
 COMPOSE="docker compose"
 PG_USER="${POSTGRES_USER:-lab}"
@@ -10,8 +18,7 @@ PG_DB="${POSTGRES_DB:-lab}"
 TSDB_USER="${TSDB_USER:-lab}"
 TSDB_DB="${TSDB_DB:-telemetry}"
 
-SCHEDULE_FILE="schedules/demo_5cycle.yaml"
-SCHEDULE_ID="demo_5cycle"
+resolve_schedule "${SCHEDULE:-demo_5cycle}" demo
 
 # Read chassis list and channel count from the schedule's bench: block.
 eval "$(uv run python scripts/schedule_bench.py "$SCHEDULE_FILE")"
@@ -38,7 +45,7 @@ SQL
 $COMPOSE exec -T postgres psql -v ON_ERROR_STOP=1 -U "$PG_USER" -d "$PG_DB" <<SQL
 WITH chassis(id) AS (VALUES ${CHASSIS_VALUES})
 INSERT INTO experiments (id, chassis_id, channel_idx, schedule_id, schedule_git_sha, status)
-SELECT 'demo-c' || c.id || '-ch' || lpad(g::text, 2, '0'),
+SELECT 'demo-${SCHEDULE_ID}-c' || c.id || '-ch' || lpad(g::text, 2, '0'),
        c.id, g, '$SCHEDULE_ID', '$GIT_SHA', 'pending'
   FROM chassis c
  CROSS JOIN generate_series(0, ${LAST}) g
@@ -52,7 +59,7 @@ DEADLINE=$(( SECONDS + 600 ))
 while (( SECONDS < DEADLINE )); do
   remaining=$($COMPOSE exec -T postgres psql -tA -U "$PG_USER" -d "$PG_DB" -c "
     SELECT count(*) FROM experiments
-    WHERE id LIKE 'demo-%' AND status NOT IN ('completed','failed')
+    WHERE id LIKE 'demo-%' AND schedule_id = '$SCHEDULE_ID' AND status NOT IN ('completed','failed')
   ")
   remaining=${remaining//[[:space:]]/}
   if [[ "$remaining" == "0" ]]; then
@@ -65,7 +72,7 @@ done
 # 3. Assert outcomes
 $COMPOSE exec -T postgres psql -U "$PG_USER" -d "$PG_DB" -c "
   SELECT status, count(*) FROM experiments
-  WHERE id LIKE 'demo-%' GROUP BY status ORDER BY status;
+  WHERE id LIKE 'demo-%' AND schedule_id = '$SCHEDULE_ID' GROUP BY status ORDER BY status;
 "
 
 rows=$($COMPOSE exec -T timescaledb psql -tA -U "$TSDB_USER" -d "$TSDB_DB" -c "
@@ -78,7 +85,7 @@ echo "[demo] telemetry rows in last 15 min: $rows"
 [[ "$rows" -gt 0 ]] || { echo "[demo] FAIL: no telemetry"; exit 1; }
 
 failed=$($COMPOSE exec -T postgres psql -tA -U "$PG_USER" -d "$PG_DB" -c "
-  SELECT count(*) FROM experiments WHERE id LIKE 'demo-%' AND status != 'completed'
+  SELECT count(*) FROM experiments WHERE id LIKE 'demo-%' AND schedule_id = '$SCHEDULE_ID' AND status != 'completed'
 ")
 failed=${failed//[[:space:]]/}
 [[ "$failed" == "0" ]] || { echo "[demo] FAIL: $failed experiments did not complete"; exit 1; }

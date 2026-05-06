@@ -2,6 +2,18 @@
 
 All notable changes to the Battery Lab Simulator. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.2]
+
+### Added
+
+- **`scripts/_schedule.sh`** — sourceable helper exporting `resolve_schedule <input>`, which both runners now use. Strips an optional `schedules/` prefix and `.yaml` suffix, validates the resulting id matches `^[A-Za-z0-9_-]+$` (rejects spaces, quotes, `;`, `%`, slashes — anything unsafe to drop into a path or SQL literal), confirms the file exists, and exports `SCHEDULE` / `SCHEDULE_FILE` / `SCHEDULE_ID`. Mirrors the `chaos/_lib.sh` pattern.
+
+### Fixed
+
+- **Schedule input accepts any natural form** in both `scripts/run_soak.sh` and `scripts/run_demo.sh`: `soak_45c`, `soak_45c.yaml`, or `schedules/soak_45c.yaml`. Previously the path forms produced `schedules/schedules/soak_45c.yaml.yaml` and a confusing not-found error — the runners wrapped their input as `schedules/${SCHEDULE}.yaml` without first stripping a possible prefix/suffix. Normalization + validation moved into the new shared `_schedule.sh` helper so soak and demo can't drift.
+- **`make demo SCHEDULE=…` actually honours the override now.** Previously the Makefile recipe called `scripts/run_demo.sh`, which hardcoded `schedules/demo_5cycle.yaml` and silently ignored the env var — making the [CLAUDE.md](CLAUDE.md) "Add a new schedule" recipe step 4 (smoke-test your new schedule via `make demo`) a no-op. `run_demo.sh` now reads `SCHEDULE` through the shared resolver, and namespaces enrolled experiment IDs by schedule (`demo-<schedule_id>-cN-chXX`) so successive demo runs across different schedules don't collide on the experiments table's primary key.
+- **SQL `LIKE` wildcard hazard in run-scoping queries.** Both runners scoped their wait/assert/status queries with `id LIKE '<prefix>-${SCHEDULE_ID}-%'`, but every existing schedule id (`demo_5cycle`, `soak_25c`, `cycle_life_25C`, …) contains `_`, which LIKE treats as a single-character wildcard. Two distinct schedules `foo_bar` and `fooXbar` would have collided; on a long-running bench that's a real false-positive risk. Switched to `id LIKE '<prefix>-%' AND schedule_id = '$SCHEDULE_ID'` — the literal prefix has no wildcards, and `=` against the existing `experiments.schedule_id` column is exact-match. The `^[A-Za-z0-9_-]+$` validator in `_schedule.sh` is belt-and-braces against any future SQL injection if a query goes back to interpolated literals.
+
 ## [0.1.1]
 
 ### Changed

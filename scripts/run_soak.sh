@@ -4,8 +4,10 @@
 # Run the default schedule:
 #     make soak.start
 #
-# Pick a different schedule:
+# Pick a different schedule (any of these forms work):
 #     SCHEDULE=soak_45c make soak.start
+#     SCHEDULE=soak_45c.yaml make soak.start
+#     SCHEDULE=schedules/soak_45c.yaml make soak.start
 #
 # Chassis range and channels-per-chassis are read from the schedule's `bench:`
 # block (see schedules/soak_25c.yaml). To run a different bench layout, copy
@@ -18,13 +20,13 @@
 # to watch cycle_features arrive.
 set -euo pipefail
 
+source "$(dirname "$0")/_schedule.sh"
+
 COMPOSE="docker compose"
 PG_USER="${POSTGRES_USER:-lab}"
 PG_DB="${POSTGRES_DB:-lab}"
 
-SCHEDULE="${SCHEDULE:-soak_25c}"
-SCHEDULE_FILE="schedules/${SCHEDULE}.yaml"
-[[ -f "$SCHEDULE_FILE" ]] || { echo "[soak] schedule not found: $SCHEDULE_FILE" >&2; exit 1; }
+resolve_schedule "${SCHEDULE:-soak_25c}" soak
 
 # Read chassis list and channel count from the schedule's bench: block.
 # schedule_bench.py validates against MAX_CHASSIS / MAX_CHANNELS_PER_CHASSIS,
@@ -63,11 +65,13 @@ ON CONFLICT (id) DO UPDATE
 SQL
 
 # 3. Sanity: confirm the rows exist and the orchestrator hasn't already
-# bounced them to 'failed' (e.g. wrong chassis).
+# bounced them to 'failed' (e.g. wrong chassis). Filter by schedule_id
+# rather than LIKE on the id prefix — schedule names contain `_`, which
+# is SQL LIKE's single-char wildcard.
 $COMPOSE exec -T postgres psql -U "$PG_USER" -d "$PG_DB" -c "
   SELECT status, count(*)
     FROM experiments
-   WHERE id LIKE 'soak-${SCHEDULE}-%'
+   WHERE id LIKE 'soak-%' AND schedule_id = '$SCHEDULE_ID'
    GROUP BY status ORDER BY status;
 "
 
@@ -79,7 +83,7 @@ cat <<EOF
   make logs SVC=orchestrator
   make logs SVC=analytics
   make duckdb.query Q="SELECT chassis_id, channel_idx, count(*) FROM telemetry_all GROUP BY 1,2 ORDER BY 1,2"
-  make psql        # then: SELECT cycle_index, capacity_ah, coulombic_eff FROM cycle_features WHERE experiment_id LIKE 'soak-${SCHEDULE}-%' ORDER BY 1, 2 LIMIT 20;
+  make psql        # then: SELECT cycle_index, capacity_ah, coulombic_eff FROM cycle_features cf JOIN experiments e ON cf.experiment_id=e.id WHERE e.schedule_id='${SCHEDULE_ID}' ORDER BY 1, 2 LIMIT 20;
 
 [soak] Stop the soak by marking experiments completed/failed in postgres, or just \`make down\`.
 EOF
