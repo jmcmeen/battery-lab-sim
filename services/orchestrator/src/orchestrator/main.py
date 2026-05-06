@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+from collections.abc import Sequence
 
 import asyncpg
 from batterylab.chemistry import get_chemistry
@@ -257,10 +258,12 @@ async def _kickoff_pending(
                 continue
             experiments[built.id] = built
 
-    await asyncio.gather(
-        *(kickoff_one_chassis(cid, recs) for cid, recs in by_chassis.items()),
-        return_exceptions=False,
+    chassis_ids = list(by_chassis.keys())
+    results = await asyncio.gather(
+        *(kickoff_one_chassis(cid, by_chassis[cid]) for cid in chassis_ids),
+        return_exceptions=True,
     )
+    _log_chassis_sweep_errors("kickoff", chassis_ids, results)
 
 
 async def _tick_running(
@@ -288,10 +291,40 @@ async def _tick_running(
             except OSError as e:
                 log.warning("tick_io_error", experiment_id=exp.id, error=str(e))
 
-    await asyncio.gather(
-        *(tick_one_chassis(cid, exps) for cid, exps in by_chassis.items()),
-        return_exceptions=False,
+    chassis_ids = list(by_chassis.keys())
+    results = await asyncio.gather(
+        *(tick_one_chassis(cid, by_chassis[cid]) for cid in chassis_ids),
+        return_exceptions=True,
     )
+    _log_chassis_sweep_errors("tick", chassis_ids, results)
+
+
+def _log_chassis_sweep_errors(
+    sweep: str,
+    chassis_ids: list[int],
+    results: Sequence[BaseException | None],
+) -> None:
+    """Log any per-chassis exceptions returned by ``asyncio.gather(return_exceptions=True)``.
+
+    The fan-out pattern (kickoff / tick / resume / keepalive) uses
+    ``return_exceptions=True`` so a wedged or unexpectedly-failing chassis
+    can't tear down the whole sweep — but we still need visibility into
+    the failure. OSError-level transient faults are already caught and
+    logged inside each per-experiment loop; what reaches here is the
+    surprise tier (asyncpg pool exhaustion, internal invariant violation,
+    bad-data dataclass instantiation). ``CancelledError`` is re-raised
+    because it must propagate to honour shutdown.
+    """
+    for chassis_id, result in zip(chassis_ids, results, strict=True):
+        if isinstance(result, asyncio.CancelledError):
+            raise result
+        if isinstance(result, BaseException):
+            log.error(
+                "chassis_sweep_failed",
+                sweep=sweep,
+                chassis_id=chassis_id,
+                error=repr(result),
+            )
 
 
 async def _poll_pending(
@@ -343,8 +376,13 @@ async def _resume_inflight(
     connection is single-threaded per chassis), but chassis run concurrently.
     A 256-channel cold boot must finish well under the 5 s chassis dead-man
     threshold, so a serial sweep through all rows is not safe at scale.
+
+    Each per-chassis coroutine returns a private dict; the caller merges
+    them after ``gather`` finishes. We don't mutate a shared dict from
+    within the gathered tasks — even though CPython's single-threaded
+    event loop makes that safe today, returning per-chassis results keeps
+    the contract obvious and forward-portable.
     """
-    out: dict[str, ex.Experiment] = {}
     recs = await _load_running_or_pending(pool)
     by_chassis: dict[int, list[asyncpg.Record]] = {}
     for rec in recs:
@@ -352,7 +390,10 @@ async def _resume_inflight(
             continue
         by_chassis.setdefault(int(rec["chassis_id"]), []).append(rec)
 
-    async def resume_one_chassis(chassis_id: int, recs: list[asyncpg.Record]) -> None:
+    async def resume_one_chassis(
+        chassis_id: int, recs: list[asyncpg.Record]
+    ) -> dict[str, ex.Experiment]:
+        local: dict[str, ex.Experiment] = {}
         for rec in recs:
             if not await _check_chassis_reachable(
                 pool,
@@ -417,12 +458,27 @@ async def _resume_inflight(
                 cycle_index=exp.cycle_index,
                 experiment_id=exp.id,
             )
-            out[exp.id] = exp
+            local[exp.id] = exp
+        return local
 
-    await asyncio.gather(
-        *(resume_one_chassis(cid, recs) for cid, recs in by_chassis.items()),
-        return_exceptions=False,
+    chassis_ids = list(by_chassis.keys())
+    results = await asyncio.gather(
+        *(resume_one_chassis(cid, by_chassis[cid]) for cid in chassis_ids),
+        return_exceptions=True,
     )
+    out: dict[str, ex.Experiment] = {}
+    for chassis_id, result in zip(chassis_ids, results, strict=True):
+        if isinstance(result, asyncio.CancelledError):
+            raise result
+        if isinstance(result, BaseException):
+            log.error(
+                "chassis_sweep_failed",
+                sweep="resume",
+                chassis_id=chassis_id,
+                error=repr(result),
+            )
+            continue
+        out.update(result)
     return out
 
 

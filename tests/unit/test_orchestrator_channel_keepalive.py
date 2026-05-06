@@ -10,6 +10,7 @@ chassis experiments are skipped.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass
 
 import pytest
@@ -53,28 +54,39 @@ def _exp(exp_id: str, chassis_id: int, channel_idx: int, status: str = "running"
 async def _run_one_iteration(
     cyclers_by_id: dict[int, FakeCycler],
     experiments: dict[str, Experiment],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Drive ``channel_keepalive_loop`` for exactly one pass.
+    """Drive ``channel_keepalive_loop`` for exactly one full sweep.
 
-    Cancel the task right after its first sleep so we observe one full
-    sweep without waiting through SimTime.sleep().
+    Monkeypatches ``SimTime.sleep`` so the end-of-sweep sleep deterministically
+    signals "one sweep done" via an ``asyncio.Event``. Replaces the previous
+    ``for _ in range(20): await asyncio.sleep(0)`` heuristic, which coupled
+    the test to the loop's exact number of internal awaits and could flake
+    if the implementation gained additional ``await`` points.
     """
+    sweep_done = asyncio.Event()
+
+    async def fake_sleep(_period: float) -> None:
+        sweep_done.set()
+        # Yield once so the cancel below can interrupt before the next sweep.
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(channel_keepalive.SimTime, "sleep", fake_sleep)
+
     task = asyncio.create_task(
         channel_keepalive.channel_keepalive_loop(cyclers_by_id, experiments)  # type: ignore[arg-type]
     )
-    # Yield enough times for the first sweep + the SimTime.sleep to start.
-    for _ in range(20):
-        await asyncio.sleep(0)
-    task.cancel()
     try:
-        await task
-    except asyncio.CancelledError:
-        pass
+        await asyncio.wait_for(sweep_done.wait(), timeout=5.0)
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_kicks_every_running_experiment() -> None:
+async def test_kicks_every_running_experiment(monkeypatch: pytest.MonkeyPatch) -> None:
     """All ``running`` experiments get exactly one kick per sweep."""
     c9 = FakeCycler("cycler_09")
     c10 = FakeCycler("cycler_10")
@@ -85,7 +97,7 @@ async def test_kicks_every_running_experiment() -> None:
         "e3": _exp("e3", 10, 12),
     }
 
-    await _run_one_iteration(cyclers, experiments)
+    await _run_one_iteration(cyclers, experiments, monkeypatch)
 
     assert sorted(c9.kicked) == [0, 5]
     assert c10.kicked == [12]
@@ -93,7 +105,7 @@ async def test_kicks_every_running_experiment() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_skips_non_running_status() -> None:
+async def test_skips_non_running_status(monkeypatch: pytest.MonkeyPatch) -> None:
     """Failed / completed / pending experiments must not be kicked.
 
     Per cycler safety design, an idle channel's watchdog is allowed to
@@ -107,14 +119,14 @@ async def test_skips_non_running_status() -> None:
         "queued": _exp("queued", 9, 4, status="pending"),
     }
 
-    await _run_one_iteration({9: c}, experiments)
+    await _run_one_iteration({9: c}, experiments, monkeypatch)
 
     assert c.kicked == [1]
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_skips_unknown_chassis() -> None:
+async def test_skips_unknown_chassis(monkeypatch: pytest.MonkeyPatch) -> None:
     """An experiment whose chassis isn't in the cycler map is silently skipped.
 
     Mirrors the executor's defensive behaviour: a stale row pointing at
@@ -126,14 +138,14 @@ async def test_skips_unknown_chassis() -> None:
         "real": _exp("real", 9, 7),
     }
 
-    await _run_one_iteration({9: c}, experiments)
+    await _run_one_iteration({9: c}, experiments, monkeypatch)
 
     assert c.kicked == [7]
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_kick_failure_does_not_kill_loop() -> None:
+async def test_kick_failure_does_not_kill_loop(monkeypatch: pytest.MonkeyPatch) -> None:
     """An OSError on one channel must not prevent kicking siblings.
 
     A flaky Modbus link to one channel can't take down the keepalive for
@@ -148,7 +160,7 @@ async def test_kick_failure_does_not_kill_loop() -> None:
         "good_b": _exp("good_b", 9, 3),
     }
 
-    await _run_one_iteration({9: c}, experiments)
+    await _run_one_iteration({9: c}, experiments, monkeypatch)
 
     # Channel 1 raised; 2 and 3 still got kicked.
     assert sorted(c.kicked) == [2, 3]
@@ -157,42 +169,40 @@ async def test_kick_failure_does_not_kill_loop() -> None:
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_chassis_run_in_parallel(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Cross-chassis kicks fan out via asyncio.gather, not serially.
+    """Cross-chassis kicks fan out via ``asyncio.gather``, not serially.
 
-    We assert this by recording the temporal ordering of two slow chassis:
-    if they were serial, chassis 10 would be fully drained before chassis 9
-    started; in parallel, their kick events interleave.
+    Determinism strategy: each chassis's kick blocks on a shared
+    ``asyncio.Barrier(parties=2)``. If the keepalive runs the chassis
+    sub-tasks concurrently, both chassis arrive at the barrier and it
+    releases. If it runs them serially, the first chassis blocks at the
+    barrier forever and the wait_for inside ``_run_one_iteration`` times
+    out — so a serial implementation deadlocks the test rather than
+    relying on a fragile interleaving-pattern assertion.
     """
-    order: list[tuple[int, int]] = []
+    barrier = asyncio.Barrier(2)
 
-    class SlowCycler:
+    class GatedCycler:
         def __init__(self, chassis_id: int) -> None:
             self.host = f"cycler_{chassis_id:02d}"
             self.chassis_id = chassis_id
+            self.kicked: list[int] = []
 
         async def kick_channel(self, idx: int) -> None:
-            order.append((self.chassis_id, idx))
-            # Yield so the other chassis's coroutine gets a turn.
-            await asyncio.sleep(0)
+            self.kicked.append(idx)
+            # Wait until the OTHER chassis also gets here. Serial gather
+            # means this never returns; parallel gather means both arrive
+            # and the barrier releases both.
+            await barrier.wait()
 
-    c9 = SlowCycler(9)
-    c10 = SlowCycler(10)
+    c9 = GatedCycler(9)
+    c10 = GatedCycler(10)
     experiments = {
         "e1": _exp("e1", 9, 0),
-        "e2": _exp("e2", 9, 1),
-        "e3": _exp("e3", 10, 0),
-        "e4": _exp("e4", 10, 1),
+        "e2": _exp("e2", 10, 0),
     }
 
-    await _run_one_iteration({9: c9, 10: c10}, experiments)  # type: ignore[dict-item]
+    await _run_one_iteration({9: c9, 10: c10}, experiments, monkeypatch)  # type: ignore[dict-item]
 
-    # Within a chassis, kicks are serial (0 before 1).
-    assert [c for c, _ in order if c == 9] == [9, 9]
-    assert [c for c, _ in order if c == 10] == [10, 10]
-    # Across chassis, the events interleave — chassis 10 should have at
-    # least one kick before chassis 9 finishes both of its kicks.
-    nine_indices = [i for i, (c, _) in enumerate(order) if c == 9]
-    ten_indices = [i for i, (c, _) in enumerate(order) if c == 10]
-    assert ten_indices[0] < nine_indices[-1], (
-        f"expected interleaved (parallel) kicks, got serial ordering: {order}"
-    )
+    # Both chassis got past the barrier ⇒ both ran concurrently.
+    assert c9.kicked == [0]
+    assert c10.kicked == [0]

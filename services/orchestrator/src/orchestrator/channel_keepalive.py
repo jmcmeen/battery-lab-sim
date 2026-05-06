@@ -83,11 +83,27 @@ async def channel_keepalive_loop(
             by_chassis.setdefault(exp.chassis_id, []).append(exp.channel_idx)
 
         if by_chassis:
-            await asyncio.gather(
+            chassis_ids = list(by_chassis.keys())
+            results = await asyncio.gather(
                 *(
-                    _kick_chassis_channels(cyclers_by_id[cid], idxs)
-                    for cid, idxs in by_chassis.items()
+                    _kick_chassis_channels(cyclers_by_id[cid], by_chassis[cid])
+                    for cid in chassis_ids
                 ),
-                return_exceptions=False,
+                return_exceptions=True,
             )
+            # Per-channel OSError is already caught inside
+            # ``_kick_chassis_channels``; this is the outer guard for the
+            # surprise tier (asyncio.CancelledError must propagate so
+            # shutdown still works; everything else is logged so a wedge
+            # in one chassis doesn't take down the keepalive for the rest
+            # of the bench).
+            for chassis_id, result in zip(chassis_ids, results, strict=True):
+                if isinstance(result, asyncio.CancelledError):
+                    raise result
+                if isinstance(result, BaseException):
+                    log.error(
+                        "channel_keepalive_chassis_failed",
+                        chassis_id=chassis_id,
+                        error=repr(result),
+                    )
         await SimTime.sleep(KICK_PERIOD_SIM_S)
