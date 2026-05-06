@@ -1,0 +1,23 @@
+# Pre-commit hooks. Install with:  uv run pre-commit install
+#
+# Mirrors the local lint pipeline (ruff format + ruff check + mypy on the
+# strict-typed shared lib). Service code is checked by ruff but not mypy
+# in the hook — full-repo mypy lives in `make lint` / CI, which is too
+# slow for a per-commit hook (~5 s vs. ~0.3 s scoped).
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.7.4
+    hooks:
+      - id: ruff-format
+      - id: ruff
+        args: ["--fix"]
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.13.0
+    hooks:
+      - id: mypy
+        name: mypy (libs/batterylab strict)
+        files: ^libs/batterylab/src/
+        args: ["--strict", "--no-incremental"]
+        additional_dependencies:
+          - pydantic>=2.0

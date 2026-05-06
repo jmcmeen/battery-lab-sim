@@ -1,0 +1,88 @@
+[project]
+name = "battery-lab-sim"
+version = "0.1.0"
+description = "Battery Lab Simulator — dockerized digital twin of a battery R&D lab"
+requires-python = ">=3.11"
+
+[tool.uv.workspace]
+members = [
+  "libs/batterylab",
+  "services/cycler",
+  "services/chamber",
+  "services/ingester",
+  "services/orchestrator",
+  "services/watchdog",
+  "services/parquet_export",
+  "services/analytics",
+]
+
+[tool.uv.sources]
+batterylab = { workspace = true }
+
+[dependency-groups]
+dev = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+  "ruff>=0.5",
+  "mypy>=1.10",
+  "testcontainers[postgres]>=4.7",
+  "asyncpg>=0.29",
+  "aiomqtt>=2.3",
+  "pyyaml>=6.0",
+  "types-PyYAML>=6.0",
+  "pymodbus>=3.7,<3.8",
+  "hypothesis>=6.100",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "ASYNC"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+
+# Strict on the shared library (the API every service depends on); a softer
+# bar on services and tests, where third-party dynamic APIs (asyncpg, aiomqtt,
+# pymodbus, pyarrow) would produce 90% noise under full strict. mypy still
+# catches real bugs (wrong argument types, return-type mismatches) at the
+# softer setting — see the [[overrides]] blocks below.
+
+# Third-party libraries without type stubs.
+[[tool.mypy.overrides]]
+module = ["asyncpg.*", "aiomqtt.*", "pymodbus.*", "pyarrow.*", "structlog.*", "scipy.*", "testcontainers.*", "requests.*"]
+ignore_missing_imports = true
+
+# Service code: keep core checks (return types, arg types) but lift strictness
+# flags that conflict with dynamically-typed third-party APIs.
+[[tool.mypy.overrides]]
+module = ["cycler.*", "chamber.*", "ingester.*", "orchestrator.*", "watchdog.*", "parquet_export.*", "analytics.*"]
+disallow_untyped_calls = false
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_any_generics = false
+warn_return_any = false
+
+# Test code: same relaxed bar — tests use fixtures and helpers that often
+# return Any, and mocking fixtures pass Anys around by design.
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_calls = false
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_any_generics = false
+warn_return_any = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+  "unit: fast tests, no I/O",
+  "integration: testcontainers, slow",
+  "chaos: failure-injection tests against a running stack (`make up` first)",
+  "bench: throughput / latency benchmarks (testcontainers; opt-in via `make bench`)",
+]

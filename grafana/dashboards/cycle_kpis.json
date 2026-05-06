@@ -1,0 +1,302 @@
+{
+  "uid": "cycle-kpis",
+  "title": "Cycle KPIs",
+  "tags": ["battery-lab", "cycle"],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": {"from": "now-6h", "to": "now"},
+  "annotations": {"list": []},
+  "templating": {
+    "list": [
+      {
+        "name": "chassis_id",
+        "label": "Chassis",
+        "type": "query",
+        "datasource": {"type": "postgres", "uid": "pg-metadata"},
+        "query": "SELECT chassis_id::text AS __value, chassis_id::text AS __text FROM (SELECT DISTINCT chassis_id FROM experiments ORDER BY chassis_id) c",
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false
+      },
+      {
+        "name": "channel_idx",
+        "label": "Channel",
+        "type": "query",
+        "datasource": {"type": "postgres", "uid": "pg-metadata"},
+        "query": "SELECT channel_idx::text AS __value, channel_idx::text AS __text FROM (SELECT DISTINCT channel_idx FROM experiments WHERE chassis_id = ${chassis_id} ORDER BY channel_idx) c",
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false
+      },
+      {
+        "name": "experiment_id",
+        "label": "Experiment",
+        "type": "query",
+        "datasource": {"type": "postgres", "uid": "pg-metadata"},
+        "query": "SELECT id AS __value, id AS __text FROM experiments WHERE chassis_id = ${chassis_id} AND channel_idx = ${channel_idx} ORDER BY created_at DESC",
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Experiment status",
+      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 3},
+      "datasource": {"type": "postgres", "uid": "pg-metadata"},
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "green", "value": null}]
+          },
+          "color": {"mode": "thresholds"}
+        }
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "status", "values": false},
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT status FROM experiments WHERE id = '${experiment_id}'"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Schedule",
+      "gridPos": {"x": 6, "y": 0, "w": 12, "h": 3},
+      "datasource": {"type": "postgres", "uid": "pg-metadata"},
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "schedule", "values": false},
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT schedule_id || ' @ ' || left(schedule_git_sha, 8) AS schedule FROM experiments WHERE id = '${experiment_id}'"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Cycles completed",
+      "gridPos": {"x": 18, "y": 0, "w": 6, "h": 3},
+      "datasource": {"type": "postgres", "uid": "pg-metadata"},
+      "fieldConfig": {"defaults": {"unit": "none"}},
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT COALESCE(MAX(cycle_index) + 1, 0) AS cycles_completed FROM experiment_steps WHERE experiment_id = '${experiment_id}' AND state = 'completed'"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Voltage trajectory (selected channel, time-aligned)",
+      "gridPos": {"x": 0, "y": 3, "w": 24, "h": 9},
+      "datasource": {"type": "postgres", "uid": "tsdb-telemetry"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "volt",
+          "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 0}
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT time AS \"time\", voltage_v AS value, 'cycle ' || cycle_index AS metric FROM telemetry WHERE chassis_id = ${chassis_id} AND channel_idx = ${channel_idx} AND $__timeFilter(time) ORDER BY time"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Peak temperature per cycle",
+      "gridPos": {"x": 0, "y": 12, "w": 12, "h": 8},
+      "datasource": {"type": "postgres", "uid": "tsdb-telemetry"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "custom": {"drawStyle": "line", "pointSize": 6, "fillOpacity": 10}
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT min(time) AS \"time\", max(temperature_c) AS \"peak_c\", 'channel' AS metric FROM telemetry WHERE chassis_id = ${chassis_id} AND channel_idx = ${channel_idx} AND $__timeFilter(time) GROUP BY cycle_index ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Step durations (this experiment)",
+      "gridPos": {"x": 12, "y": 12, "w": 12, "h": 8},
+      "datasource": {"type": "postgres", "uid": "pg-metadata"},
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"align": "left"}
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "duration_s"},
+            "properties": [{"id": "unit", "value": "s"}]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT cycle_index, step_index, step_name, state, EXTRACT(EPOCH FROM (ended_at - started_at))::int AS duration_s FROM experiment_steps WHERE experiment_id = '${experiment_id}' ORDER BY cycle_index, step_index"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Capacity vs Cycle (Ah)",
+      "gridPos": {"x": 0, "y": 20, "w": 12, "h": 8},
+      "datasource": {"type": "postgres", "uid": "pg-metadata"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "amph",
+          "custom": {"drawStyle": "line", "pointSize": 5, "fillOpacity": 10}
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT computed_at AS \"time\", capacity_ah AS value, 'capacity_ah' AS metric FROM cycle_features WHERE experiment_id = '${experiment_id}' ORDER BY cycle_index"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Coulombic efficiency vs Cycle",
+      "gridPos": {"x": 12, "y": 20, "w": 12, "h": 8},
+      "datasource": {"type": "postgres", "uid": "pg-metadata"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0.95,
+          "max": 1.0,
+          "custom": {"drawStyle": "line", "pointSize": 5, "fillOpacity": 10}
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT computed_at AS \"time\", coulombic_eff AS value, 'CE' AS metric FROM cycle_features WHERE experiment_id = '${experiment_id}' AND coulombic_eff IS NOT NULL ORDER BY cycle_index"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Internal resistance R₀ vs Cycle (Ω)",
+      "gridPos": {"x": 0, "y": 28, "w": 12, "h": 8},
+      "datasource": {"type": "postgres", "uid": "pg-metadata"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ohm",
+          "custom": {"drawStyle": "line", "pointSize": 5, "fillOpacity": 10}
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT computed_at AS \"time\", r0_ohm AS value, 'r0_ohm' AS metric FROM cycle_features WHERE experiment_id = '${experiment_id}' AND r0_ohm IS NOT NULL ORDER BY cycle_index"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "table",
+      "title": "dQ/dV peaks (latest cycle)",
+      "gridPos": {"x": 12, "y": 28, "w": 12, "h": 8},
+      "datasource": {"type": "postgres", "uid": "pg-metadata"},
+      "fieldConfig": {"defaults": {"custom": {"align": "left"}}},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT cycle_index, jsonb_array_elements(dq_dv_peaks)->>'voltage_v' AS voltage_v, jsonb_array_elements(dq_dv_peaks)->>'dq_dv' AS dq_dv, jsonb_array_elements(dq_dv_peaks)->>'prominence' AS prominence FROM cycle_features WHERE experiment_id = '${experiment_id}' ORDER BY cycle_index DESC LIMIT 20"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "dQ/dV peak voltage shift vs Cycle",
+      "description": "Top 3 most prominent dQ/dV peaks per cycle, plotted by peak voltage. The Severson signature: peaks shift and shrink as the cell ages.",
+      "gridPos": {"x": 0, "y": 36, "w": 12, "h": 8},
+      "datasource": {"type": "postgres", "uid": "pg-metadata"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "volt",
+          "custom": {"drawStyle": "line", "pointSize": 5, "fillOpacity": 0, "spanNulls": true}
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT computed_at AS \"time\", voltage_v AS value, 'peak_' || rn AS metric FROM (SELECT computed_at, cycle_index, (peak->>'voltage_v')::float AS voltage_v, ROW_NUMBER() OVER (PARTITION BY cycle_index ORDER BY (peak->>'prominence')::float DESC) AS rn FROM cycle_features, jsonb_array_elements(dq_dv_peaks) AS peak WHERE experiment_id = '${experiment_id}' AND dq_dv_peaks IS NOT NULL) ranked WHERE rn <= 3 ORDER BY cycle_index, rn"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "SOH vs Cycle",
+      "description": "State of Health: capacity_ah normalized to the first cycle's capacity. A healthy cell drifts down from 1.0; end-of-life is conventionally 0.8.",
+      "gridPos": {"x": 12, "y": 36, "w": 12, "h": 8},
+      "datasource": {"type": "postgres", "uid": "pg-metadata"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1.0,
+          "custom": {"drawStyle": "line", "pointSize": 5, "fillOpacity": 10}
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT computed_at AS \"time\", capacity_ah / FIRST_VALUE(capacity_ah) OVER (PARTITION BY experiment_id ORDER BY cycle_index) AS value, 'SOH' AS metric FROM cycle_features WHERE experiment_id = '${experiment_id}' AND capacity_ah IS NOT NULL ORDER BY cycle_index"
+        }
+      ]
+    }
+  ]
+}

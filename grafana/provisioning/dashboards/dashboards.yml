@@ -1,0 +1,24 @@
+apiVersion: 1
+
+# Single provider sweeping ./grafana/dashboards/*.json into the General
+# (top-level) folder — this Grafana instance only serves Battery Lab so a
+# nested folder is just an extra click. Both `folder` and `folderUid` are
+# empty so Grafana doesn't auto-create one named after the provider; with
+# `folder: ""` alone, Grafana 11+ falls back to using the provider name
+# title-cased (which gave us back the "Battery Lab" folder we wanted gone).
+# updateIntervalSeconds=30 means edits to JSON files show up within 30 s
+# without a Grafana restart. allowUiUpdates lets you tweak in the UI;
+# the file remains source of truth on the next sweep, so changes need to
+# be exported back to JSON to persist.
+providers:
+  - name: battery-lab
+    orgId: 1
+    folder: ""
+    folderUid: ""
+    type: file
+    disableDeletion: true
+    allowUiUpdates: true
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

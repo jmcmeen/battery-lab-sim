@@ -1,0 +1,565 @@
+# Battery Lab Simulator — full bench: 16 cyclers × 32 channels = 512.
+# Cyclers split across two thermal chambers (A: 01–08, B: 09–16).
+
+name: battery-lab-sim
+
+x-common-env: &common-env
+  SIM_TIME_FACTOR: ${SIM_TIME_FACTOR:-10}
+  TELEMETRY_HZ: ${TELEMETRY_HZ:-10}
+  MQTT_HOST: mosquitto
+  MQTT_PORT: 1883
+  PYTHONUNBUFFERED: "1"
+
+# Auto-restart all services. The watchdog has no watchdog of its own, so if
+# any monitor crashes, Docker brings it back. v0.3-reliability invariant.
+x-restart: &restart unless-stopped
+
+# Shared cycler service shape — 16 instances differ only in CHASSIS_ID,
+# CHAMBER_ID, and host port mapping. Per CLAUDE.md invariant #2 (one
+# container per chassis), each cycler is its own service block.
+x-cycler-base: &cycler-base
+  build:
+    context: .
+    dockerfile: services/cycler/Dockerfile
+  networks: [lab_net]
+  restart: *restart
+  # 256 MB headroom for one chassis × 32 channels of asyncio tasks +
+  # the Modbus mirror block. Verified with `docker stats` during a 1-hour
+  # soak: typical RSS ~110 MB, peak ~140 MB. Bump if you raise
+  # CHANNELS_PER_CYCLER above 32.
+  mem_limit: 256m
+  healthcheck:
+    test: ["CMD-SHELL", "python -m cycler.healthcheck || exit 1"]
+    interval: 10s
+    timeout: 5s
+    retries: 6
+
+x-chamber-base: &chamber-base
+  build:
+    context: .
+    dockerfile: services/chamber/Dockerfile
+  networks: [lab_net]
+  restart: *restart
+  mem_limit: 256m
+  healthcheck:
+    test: ["CMD-SHELL", "python -m chamber.healthcheck || exit 1"]
+    interval: 10s
+    timeout: 5s
+    retries: 6
+
+networks:
+  lab_net:
+    driver: bridge
+
+volumes:
+  tsdb_data:
+  pg_data:
+  minio_data:
+  grafana_data:
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    networks: [lab_net]
+    ports: ["1883:1883"]
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    restart: *restart
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -h localhost -t '$$SYS/#' -C 1 -W 2 >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  timescaledb:
+    image: timescale/timescaledb:2.16.1-pg16
+    networks: [lab_net]
+    ports: ["5433:5432"]
+    environment:
+      POSTGRES_USER: ${TSDB_USER:-lab}
+      POSTGRES_PASSWORD: ${TSDB_PASSWORD:-lab}
+      POSTGRES_DB: ${TSDB_DB:-telemetry}
+    volumes:
+      - tsdb_data:/var/lib/postgresql/data
+    restart: *restart
+    # 512 MB covers shared_buffers + WAL + Timescale chunk cache for the
+    # 512-channel × 10 Hz workload. If you scale channels past ~1024, raise
+    # to 1g; the COPY ingest path is the dominant memory consumer.
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${TSDB_USER:-lab} -d ${TSDB_DB:-telemetry}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  postgres:
+    image: postgres:16
+    networks: [lab_net]
+    ports: ["5432:5432"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-lab}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lab}
+      POSTGRES_DB: ${POSTGRES_DB:-lab}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    restart: *restart
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lab} -d ${POSTGRES_DB:-lab}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  minio:
+    image: minio/minio:RELEASE.2024-09-13T20-26-02Z
+    command: server /data --console-address ":9001"
+    networks: [lab_net]
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-admin12345}
+    volumes:
+      - minio_data:/data
+    restart: *restart
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9000/minio/health/live || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    networks: [lab_net]
+    ports: ["3000:3000"]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Anonymous mode disabled: with it on, Grafana's frontend tries to hit
+      # /api/user/preferences and /api/live/ws using the session token an
+      # anonymous user doesn't have, and pops an "Unauthorized" toast on
+      # every page load. Logging in (default admin/admin) gives a real
+      # session and the toasts stop.
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      # Datasource provisioning reads ${VAR} interpolation from env, so
+      # forward DB credentials so the YAML can stay generic.
+      TSDB_USER: ${TSDB_USER:-lab}
+      TSDB_PASSWORD: ${TSDB_PASSWORD:-lab}
+      TSDB_DB: ${TSDB_DB:-telemetry}
+      POSTGRES_USER: ${POSTGRES_USER:-lab}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lab}
+      POSTGRES_DB: ${POSTGRES_DB:-lab}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    restart: *restart
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    depends_on:
+      timescaledb: {condition: service_healthy}
+      postgres: {condition: service_healthy}
+
+  # ---- Thermal chambers --------------------------------------------------
+  chamber_a:
+    <<: *chamber-base
+    environment:
+      <<: *common-env
+      CHAMBER_ID: "A"
+      CHAMBER_SETPOINT_C: ${CHAMBER_A_SETPOINT_C:-25.0}
+      CHAMBER_TAU_S: ${CHAMBER_TAU_S:-600.0}
+      MODBUS_PORT: "502"
+    depends_on:
+      mosquitto: {condition: service_healthy}
+
+  chamber_b:
+    <<: *chamber-base
+    environment:
+      <<: *common-env
+      CHAMBER_ID: "B"
+      CHAMBER_SETPOINT_C: ${CHAMBER_B_SETPOINT_C:-45.0}
+      CHAMBER_TAU_S: ${CHAMBER_TAU_S:-600.0}
+      MODBUS_PORT: "502"
+    depends_on:
+      mosquitto: {condition: service_healthy}
+
+  # ---- Cyclers (16 chassis × 32 channels = 512) --------------------------
+  # Chassis 01-08 → chamber_a (25 °C). Chassis 09-16 → chamber_b (45 °C).
+  # Host port mapping: cycler_NN → 502NN. Useful for ad-hoc Modbus debug;
+  # not required for orchestrator/watchdog (they reach via lab_net).
+  cycler_01:
+    <<: *cycler-base
+    environment:
+      <<: *common-env
+      CHASSIS_ID: "1"
+      CHANNELS_PER_CYCLER: ${CHANNELS_PER_CYCLER:-32}
+      MODBUS_PORT: "502"
+      CHAMBER_ID: "A"
+    ports: ["5021:502"]
+    depends_on:
+      mosquitto: {condition: service_healthy}
+      chamber_a: {condition: service_healthy}
+
+  cycler_02:
+    <<: *cycler-base
+    environment:
+      <<: *common-env
+      CHASSIS_ID: "2"
+      CHANNELS_PER_CYCLER: ${CHANNELS_PER_CYCLER:-32}
+      MODBUS_PORT: "502"
+      CHAMBER_ID: "A"
+    ports: ["5022:502"]
+    depends_on:
+      mosquitto: {condition: service_healthy}
+      chamber_a: {condition: service_healthy}
+
+  cycler_03:
+    <<: *cycler-base
+    environment:
+      <<: *common-env
+      CHASSIS_ID: "3"
+      CHANNELS_PER_CYCLER: ${CHANNELS_PER_CYCLER:-32}
+      MODBUS_PORT: "502"
+      CHAMBER_ID: "A"
+    ports: ["5023:502"]
+    depends_on:
+      mosquitto: {condition: service_healthy}
+      chamber_a: {condition: service_healthy}
+
+  cycler_04:
+    <<: *cycler-base
+    environment:
+      <<: *common-env
+      CHASSIS_ID: "4"
+      CHANNELS_PER_CYCLER: ${CHANNELS_PER_CYCLER:-32}
+      MODBUS_PORT: "502"
+      CHAMBER_ID: "A"
+    ports: ["5024:502"]
+    depends_on:
+      mosquitto: {condition: service_healthy}
+      chamber_a: {condition: service_healthy}
+
+  cycler_05:
+    <<: *cycler-base
+    environment:
+      <<: *common-env
+      CHASSIS_ID: "5"
+      CHANNELS_PER_CYCLER: ${CHANNELS_PER_CYCLER:-32}
+      MODBUS_PORT: "502"
+      CHAMBER_ID: "A"
+    ports: ["5025:502"]
+    depends_on:
+      mosquitto: {condition: service_healthy}
+      chamber_a: {condition: service_healthy}
+
+  cycler_06:
+    <<: *cycler-base
+    environment:
+      <<: *common-env
+      CHASSIS_ID: "6"
+      CHANNELS_PER_CYCLER: ${CHANNELS_PER_CYCLER:-32}
+      MODBUS_PORT: "502"
+      CHAMBER_ID: "A"
+    ports: ["5026:502"]
+    depends_on:
+      mosquitto: {condition: service_healthy}
+      chamber_a: {condition: service_healthy}
+
+  cycler_07:
+    <<: *cycler-base
+    environment:
+      <<: *common-env
+      CHASSIS_ID: "7"
+      CHANNELS_PER_CYCLER: ${CHANNELS_PER_CYCLER:-32}
+      MODBUS_PORT: "502"
+      CHAMBER_ID: "A"
+    ports: ["5027:502"]
+    depends_on:
+      mosquitto: {condition: service_healthy}
+      chamber_a: {condition: service_healthy}
+
+  cycler_08:
+    <<: *cycler-base
+    environment:
+      <<: *common-env
+      CHASSIS_ID: "8"
+      CHANNELS_PER_CYCLER: ${CHANNELS_PER_CYCLER:-32}
+      MODBUS_PORT: "502"
+      CHAMBER_ID: "A"
+    ports: ["5028:502"]
+    depends_on:
+      mosquitto: {condition: service_healthy}
+      chamber_a: {condition: service_healthy}
+
+  cycler_09:
+    <<: *cycler-base
+    environment:
+      <<: *common-env
+      CHASSIS_ID: "9"
+      CHANNELS_PER_CYCLER: ${CHANNELS_PER_CYCLER:-32}
+      MODBUS_PORT: "502"
+      CHAMBER_ID: "B"
+    ports: ["5029:502"]
+    depends_on:
+      mosquitto: {condition: service_healthy}
+      chamber_b: {condition: service_healthy}
+
+  cycler_10:
+    <<: *cycler-base
+    environment:
+      <<: *common-env
+      CHASSIS_ID: "10"
+      CHANNELS_PER_CYCLER: ${CHANNELS_PER_CYCLER:-32}
+      MODBUS_PORT: "502"
+      CHAMBER_ID: "B"
+    ports: ["5030:502"]
+    depends_on:
+      mosquitto: {condition: service_healthy}
+      chamber_b: {condition: service_healthy}
+
+  cycler_11:
+    <<: *cycler-base
+    environment:
+      <<: *common-env
+      CHASSIS_ID: "11"
+      CHANNELS_PER_CYCLER: ${CHANNELS_PER_CYCLER:-32}
+      MODBUS_PORT: "502"
+      CHAMBER_ID: "B"
+    ports: ["5031:502"]
+    depends_on:
+      mosquitto: {condition: service_healthy}
+      chamber_b: {condition: service_healthy}
+
+  cycler_12:
+    <<: *cycler-base
+    environment:
+      <<: *common-env
+      CHASSIS_ID: "12"
+      CHANNELS_PER_CYCLER: ${CHANNELS_PER_CYCLER:-32}
+      MODBUS_PORT: "502"
+      CHAMBER_ID: "B"
+    ports: ["5032:502"]
+    depends_on:
+      mosquitto: {condition: service_healthy}
+      chamber_b: {condition: service_healthy}
+
+  cycler_13:
+    <<: *cycler-base
+    environment:
+      <<: *common-env
+      CHASSIS_ID: "13"
+      CHANNELS_PER_CYCLER: ${CHANNELS_PER_CYCLER:-32}
+      MODBUS_PORT: "502"
+      CHAMBER_ID: "B"
+    ports: ["5033:502"]
+    depends_on:
+      mosquitto: {condition: service_healthy}
+      chamber_b: {condition: service_healthy}
+
+  cycler_14:
+    <<: *cycler-base
+    environment:
+      <<: *common-env
+      CHASSIS_ID: "14"
+      CHANNELS_PER_CYCLER: ${CHANNELS_PER_CYCLER:-32}
+      MODBUS_PORT: "502"
+      CHAMBER_ID: "B"
+    ports: ["5034:502"]
+    depends_on:
+      mosquitto: {condition: service_healthy}
+      chamber_b: {condition: service_healthy}
+
+  cycler_15:
+    <<: *cycler-base
+    environment:
+      <<: *common-env
+      CHASSIS_ID: "15"
+      CHANNELS_PER_CYCLER: ${CHANNELS_PER_CYCLER:-32}
+      MODBUS_PORT: "502"
+      CHAMBER_ID: "B"
+    ports: ["5035:502"]
+    depends_on:
+      mosquitto: {condition: service_healthy}
+      chamber_b: {condition: service_healthy}
+
+  cycler_16:
+    <<: *cycler-base
+    environment:
+      <<: *common-env
+      CHASSIS_ID: "16"
+      CHANNELS_PER_CYCLER: ${CHANNELS_PER_CYCLER:-32}
+      MODBUS_PORT: "502"
+      CHAMBER_ID: "B"
+    ports: ["5036:502"]
+    depends_on:
+      mosquitto: {condition: service_healthy}
+      chamber_b: {condition: service_healthy}
+
+  # ---- Telemetry pipeline -----------------------------------------------
+  ingester:
+    build:
+      context: .
+      dockerfile: services/ingester/Dockerfile
+    networks: [lab_net]
+    environment:
+      <<: *common-env
+      TSDB_HOST: timescaledb
+      TSDB_PORT: "5432"
+      TSDB_USER: ${TSDB_USER:-lab}
+      TSDB_PASSWORD: ${TSDB_PASSWORD:-lab}
+      TSDB_DB: ${TSDB_DB:-telemetry}
+    depends_on:
+      mosquitto: {condition: service_healthy}
+      timescaledb: {condition: service_healthy}
+    restart: *restart
+    # 512 MB headroom for the 50k-row hard buffer + COPY batches.
+    # At 5120 rows/s and 1s flush cadence, in-flight batch is ~5k rows;
+    # the hard cap exists for back-pressure during DB outages.
+    mem_limit: 512m
+
+  parquet_export:
+    build:
+      context: .
+      dockerfile: services/parquet_export/Dockerfile
+    networks: [lab_net]
+    environment:
+      <<: *common-env
+      TSDB_HOST: timescaledb
+      TSDB_PORT: "5432"
+      TSDB_USER: ${TSDB_USER:-lab}
+      TSDB_PASSWORD: ${TSDB_PASSWORD:-lab}
+      TSDB_DB: ${TSDB_DB:-telemetry}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-admin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-admin12345}
+      PARQUET_BUCKET: ${PARQUET_BUCKET:-lab-archive}
+      PARQUET_EXPORT_AGE_HOURS: ${PARQUET_EXPORT_AGE_HOURS:-24}
+      PARQUET_EXPORT_PERIOD_S: ${PARQUET_EXPORT_PERIOD_S:-3600}
+    depends_on:
+      timescaledb: {condition: service_healthy}
+      minio: {condition: service_healthy}
+    restart: *restart
+    # 512 MB covers Arrow tables held in memory while building each
+    # hourly Parquet chunk. PyArrow allocators can hold reservation past
+    # the apparent active set so 256m flirts with the OOM line on the
+    # final flush of a big chunk.
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "python -m parquet_export.healthcheck || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 6
+
+  # ---- DuckDB cross-tier query shell (profile-gated; only runs on demand) ----
+  # Resolves both `timescaledb` and `minio` via lab_net DNS — same hostnames
+  # the init.sql expects. Profile keeps it out of `make up`.
+  duckdb_cli:
+    build:
+      context: scripts
+      dockerfile: duckdb_cli.Dockerfile
+    profiles: ["cli"]
+    networks: [lab_net]
+    volumes:
+      - ./scripts:/scripts:ro
+    command: ["-init", "/scripts/duckdb_init.sql"]
+    stdin_open: true
+    tty: true
+
+  # ---- Control plane ----------------------------------------------------
+  orchestrator:
+    build:
+      context: .
+      dockerfile: services/orchestrator/Dockerfile
+    networks: [lab_net]
+    mem_limit: 256m
+    environment:
+      <<: *common-env
+      PG_HOST: postgres
+      PG_PORT: "5432"
+      PG_USER: ${POSTGRES_USER:-lab}
+      PG_PASSWORD: ${POSTGRES_PASSWORD:-lab}
+      PG_DB: ${POSTGRES_DB:-lab}
+      CYCLER_HOSTS: "cycler_01:502,cycler_02:502,cycler_03:502,cycler_04:502,cycler_05:502,cycler_06:502,cycler_07:502,cycler_08:502,cycler_09:502,cycler_10:502,cycler_11:502,cycler_12:502,cycler_13:502,cycler_14:502,cycler_15:502,cycler_16:502"
+    depends_on:
+      postgres: {condition: service_healthy}
+      mosquitto: {condition: service_healthy}
+      cycler_01: {condition: service_healthy}
+      cycler_02: {condition: service_healthy}
+      cycler_03: {condition: service_healthy}
+      cycler_04: {condition: service_healthy}
+      cycler_05: {condition: service_healthy}
+      cycler_06: {condition: service_healthy}
+      cycler_07: {condition: service_healthy}
+      cycler_08: {condition: service_healthy}
+      cycler_09: {condition: service_healthy}
+      cycler_10: {condition: service_healthy}
+      cycler_11: {condition: service_healthy}
+      cycler_12: {condition: service_healthy}
+      cycler_13: {condition: service_healthy}
+      cycler_14: {condition: service_healthy}
+      cycler_15: {condition: service_healthy}
+      cycler_16: {condition: service_healthy}
+    restart: *restart
+
+  analytics:
+    build:
+      context: .
+      dockerfile: services/analytics/Dockerfile
+    networks: [lab_net]
+    mem_limit: 256m
+    environment:
+      <<: *common-env
+      PG_HOST: postgres
+      PG_PORT: "5432"
+      PG_USER: ${POSTGRES_USER:-lab}
+      PG_PASSWORD: ${POSTGRES_PASSWORD:-lab}
+      PG_DB: ${POSTGRES_DB:-lab}
+      TSDB_HOST: timescaledb
+      TSDB_PORT: "5432"
+      TSDB_USER: ${TSDB_USER:-lab}
+      TSDB_PASSWORD: ${TSDB_PASSWORD:-lab}
+      TSDB_DB: ${TSDB_DB:-telemetry}
+      ANALYTICS_DQDV_BIN_MV: ${ANALYTICS_DQDV_BIN_MV:-10}
+      ANALYTICS_DQDV_PEAK_HEIGHT: ${ANALYTICS_DQDV_PEAK_HEIGHT:-0.1}
+      ANALYTICS_R0_JUMP_THRESHOLD_PCT: ${ANALYTICS_R0_JUMP_THRESHOLD_PCT:-20.0}
+    depends_on:
+      postgres: {condition: service_healthy}
+      timescaledb: {condition: service_healthy}
+      mosquitto: {condition: service_healthy}
+    restart: *restart
+    healthcheck:
+      test: ["CMD-SHELL", "python -m analytics.healthcheck || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 6
+
+  watchdog:
+    build:
+      context: .
+      dockerfile: services/watchdog/Dockerfile
+    networks: [lab_net]
+    mem_limit: 256m
+    environment:
+      <<: *common-env
+      PG_HOST: postgres
+      PG_PORT: "5432"
+      PG_USER: ${POSTGRES_USER:-lab}
+      PG_PASSWORD: ${POSTGRES_PASSWORD:-lab}
+      PG_DB: ${POSTGRES_DB:-lab}
+      CYCLER_HOSTS: "cycler_01:502,cycler_02:502,cycler_03:502,cycler_04:502,cycler_05:502,cycler_06:502,cycler_07:502,cycler_08:502,cycler_09:502,cycler_10:502,cycler_11:502,cycler_12:502,cycler_13:502,cycler_14:502,cycler_15:502,cycler_16:502"
+    depends_on:
+      postgres: {condition: service_healthy}
+      mosquitto: {condition: service_healthy}
+      cycler_01: {condition: service_healthy}
+    restart: *restart
+    healthcheck:
+      test: ["CMD-SHELL", "python -m watchdog.healthcheck || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6

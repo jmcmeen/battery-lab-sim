@@ -1,0 +1,236 @@
+{
+  "uid": "reliability",
+  "title": "Reliability",
+  "tags": ["battery-lab", "reliability", "alerts"],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": {"from": "now-24h", "to": "now"},
+  "annotations": {"list": []},
+  "templating": {"list": []},
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Critical alerts (24h)",
+      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+      "datasource": {"type": "postgres", "uid": "pg-metadata"},
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 1},
+              {"color": "red", "value": 5}
+            ]
+          },
+          "unit": "none"
+        }
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT COALESCE(COUNT(*), 0)::int AS critical_24h FROM alerts WHERE severity = 'critical' AND created_at > now() - INTERVAL '24 hours'"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Telemetry freshness (s gap)",
+      "gridPos": {"x": 6, "y": 0, "w": 6, "h": 4},
+      "datasource": {"type": "postgres", "uid": "tsdb-telemetry"},
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 2},
+              {"color": "red", "value": 10}
+            ]
+          },
+          "unit": "s"
+        }
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "colorMode": "background",
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT COALESCE(EXTRACT(EPOCH FROM (now() - MAX(time))), 9999)::float AS gap_s FROM telemetry"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Persistent mode-drift fails (24h)",
+      "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4},
+      "datasource": {"type": "postgres", "uid": "pg-metadata"},
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "red", "value": 1}
+            ]
+          },
+          "unit": "none"
+        }
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT COALESCE(COUNT(*), 0)::int AS drift_24h FROM alerts WHERE message = 'mode_drift_persistent' AND created_at > now() - INTERVAL '24 hours'"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "piechart",
+      "title": "Experiments by status",
+      "gridPos": {"x": 18, "y": 0, "w": 6, "h": 8},
+      "datasource": {"type": "postgres", "uid": "pg-metadata"},
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom"},
+        "pieType": "donut"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT status, COUNT(*)::int AS count FROM experiments GROUP BY status ORDER BY status"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "barchart",
+      "title": "Watchdog trips by chassis (24h)",
+      "gridPos": {"x": 0, "y": 4, "w": 12, "h": 4},
+      "datasource": {"type": "postgres", "uid": "pg-metadata"},
+      "fieldConfig": {"defaults": {"unit": "none"}},
+      "options": {
+        "legend": {"displayMode": "hidden"},
+        "xField": "chassis_id"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT chassis_id::text, COUNT(*)::int AS trips FROM alerts WHERE message = 'chassis_watchdog_tripped' AND created_at > now() - INTERVAL '24 hours' GROUP BY chassis_id ORDER BY chassis_id"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "R₀-jump anomalies (24h)",
+      "gridPos": {"x": 0, "y": 8, "w": 6, "h": 4},
+      "datasource": {"type": "postgres", "uid": "pg-metadata"},
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 1},
+              {"color": "red", "value": 5}
+            ]
+          },
+          "unit": "none"
+        }
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT COALESCE(COUNT(*), 0)::int AS r0_anomalies_24h FROM alerts WHERE source = 'analytics.anomaly' AND created_at > now() - INTERVAL '24 hours'"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "table",
+      "title": "R₀-jump anomalies (most recent 50)",
+      "gridPos": {"x": 6, "y": 8, "w": 18, "h": 4},
+      "datasource": {"type": "postgres", "uid": "pg-metadata"},
+      "fieldConfig": {"defaults": {"custom": {"align": "left"}}},
+      "options": {"sortBy": [{"displayName": "created_at", "desc": true}]},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT created_at, chassis_id, channel_idx, message FROM alerts WHERE source = 'analytics.anomaly' ORDER BY created_at DESC LIMIT 50"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Alert log (most recent 100)",
+      "gridPos": {"x": 0, "y": 12, "w": 24, "h": 12},
+      "datasource": {"type": "postgres", "uid": "pg-metadata"},
+      "fieldConfig": {
+        "defaults": {"custom": {"align": "left"}},
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "severity"},
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {"type": "color-background"}
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "critical": {"color": "red", "index": 0},
+                      "warning":  {"color": "yellow", "index": 1},
+                      "info":     {"color": "blue", "index": 2}
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {"sortBy": [{"displayName": "created_at", "desc": true}]},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT created_at, severity, source, message, chassis_id, channel_idx FROM alerts ORDER BY created_at DESC LIMIT 100"
+        }
+      ]
+    }
+  ]
+}

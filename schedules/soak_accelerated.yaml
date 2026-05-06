@@ -1,0 +1,19 @@
+schedule_id: soak_accelerated
+chemistry: NMC
+# High-rate cycling at elevated temperature — purpose-built to age cells
+# fast for short demos. 2C charge / 3C discharge at 45 °C condenses what
+# would normally take ~500 cycles at moderate rates into ~50 cycles. Use
+# this for a 1-hour bench-readiness run when you need visible degradation
+# but can't soak for days.
+chamber:
+  setpoint_c: 45.0
+  soak_seconds: 600
+steps:
+  - {name: initial_rest,   type: rest, duration_s: 60}
+  - {name: cc_charge,      type: cc, rate_c: 2.0,  end_when: {voltage_v_above: 4.20, max_duration_s: 2400}}
+  - {name: cv_charge,      type: cv, voltage_v: 4.20, end_when: {current_a_below_c_rate: 0.10, max_duration_s: 1800}}
+  - {name: rest_top,       type: rest, duration_s: 60}
+  - {name: cc_discharge,   type: cc, rate_c: -3.0, end_when: {voltage_v_below: 3.00, max_duration_s: 1800}}
+  - {name: rest_bottom,    type: rest, duration_s: 60}
+cycle:
+  repeat: 100

@@ -1,0 +1,188 @@
+{
+  "uid": "live-bench",
+  "title": "Live Bench",
+  "tags": ["battery-lab", "live"],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1s",
+  "time": {"from": "now-1m", "to": "now"},
+  "annotations": {"list": []},
+  "graphTooltip": 1,
+  "templating": {
+    "list": [
+      {
+        "name": "chassis_id",
+        "label": "Chassis",
+        "type": "query",
+        "datasource": {"type": "postgres", "uid": "tsdb-telemetry"},
+        "query": "SELECT chassis_id::text AS __value, chassis_id::text AS __text FROM (SELECT DISTINCT chassis_id FROM telemetry WHERE time > now() - interval '1 minute' ORDER BY chassis_id) c",
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false
+      },
+      {
+        "name": "channel_idx",
+        "label": "Channel",
+        "type": "query",
+        "datasource": {"type": "postgres", "uid": "tsdb-telemetry"},
+        "query": "SELECT channel_idx::text AS __value, channel_idx::text AS __text FROM (SELECT DISTINCT channel_idx FROM telemetry WHERE chassis_id = ${chassis_id} AND time > now() - interval '1 minute' ORDER BY channel_idx) c",
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Active channels (last 5s)",
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 4},
+      "datasource": {"type": "postgres", "uid": "tsdb-telemetry"},
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "yellow", "value": 1},
+              {"color": "green", "value": 32}
+            ]
+          },
+          "unit": "none"
+        }
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT COUNT(DISTINCT (chassis_id, channel_idx)) AS active FROM telemetry WHERE time > now() - INTERVAL '5 seconds'"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Ingest rate (rows/sec, last 10s)",
+      "gridPos": {"x": 12, "y": 0, "w": 12, "h": 4},
+      "datasource": {"type": "postgres", "uid": "tsdb-telemetry"},
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "yellow", "value": 100},
+              {"color": "green", "value": 1000}
+            ]
+          },
+          "unit": "rps"
+        }
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT COUNT(*)::float / 10.0 AS rps FROM telemetry WHERE time > now() - INTERVAL '10 seconds'"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Voltage — chassis ${chassis_id} channel ${channel_idx}",
+      "gridPos": {"x": 0, "y": 4, "w": 12, "h": 8},
+      "datasource": {"type": "postgres", "uid": "tsdb-telemetry"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "volt",
+          "min": 2.5,
+          "max": 4.3,
+          "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 10}
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT time AS \"time\", voltage_v AS value, 'voltage' AS metric FROM telemetry WHERE chassis_id = ${chassis_id} AND channel_idx = ${channel_idx} AND $__timeFilter(time) ORDER BY time"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Current — chassis ${chassis_id} channel ${channel_idx}",
+      "gridPos": {"x": 12, "y": 4, "w": 12, "h": 8},
+      "datasource": {"type": "postgres", "uid": "tsdb-telemetry"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "amp",
+          "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 10}
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT time AS \"time\", current_a AS value, 'current' AS metric FROM telemetry WHERE chassis_id = ${chassis_id} AND channel_idx = ${channel_idx} AND $__timeFilter(time) ORDER BY time"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Temperature — chassis ${chassis_id} channel ${channel_idx}",
+      "gridPos": {"x": 0, "y": 12, "w": 12, "h": 8},
+      "datasource": {"type": "postgres", "uid": "tsdb-telemetry"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "min": 15,
+          "max": 60,
+          "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 10}
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT time AS \"time\", temperature_c AS value, 'temp' AS metric FROM telemetry WHERE chassis_id = ${chassis_id} AND channel_idx = ${channel_idx} AND $__timeFilter(time) ORDER BY time"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "SOC — chassis ${chassis_id} channel ${channel_idx}",
+      "gridPos": {"x": 12, "y": 12, "w": 12, "h": 8},
+      "datasource": {"type": "postgres", "uid": "tsdb-telemetry"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 10}
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT time AS \"time\", soc_est AS value, 'soc' AS metric FROM telemetry WHERE chassis_id = ${chassis_id} AND channel_idx = ${channel_idx} AND $__timeFilter(time) ORDER BY time"
+        }
+      ]
+    }
+  ]
+}
