@@ -39,10 +39,10 @@ def _iter_panels(panels: list[dict]) -> list[dict]:
 
 
 @pytest.mark.unit
-def test_dashboards_directory_has_three_files() -> None:
+def test_dashboards_directory_has_expected_files() -> None:
     files = _all_dashboard_files()
     names = {f.stem for f in files}
-    assert names == {"live_bench", "cycle_kpis", "reliability"}, (
+    assert names == {"live_bench", "cycle_kpis", "reliability", "chassis_overview"}, (
         f"unexpected dashboard set: {names}"
     )
 
