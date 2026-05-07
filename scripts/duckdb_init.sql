@@ -22,7 +22,10 @@ LOAD httpfs;
 -- we template the whole file instead of using getenv() per-setting.
 ATTACH 'host=timescaledb port=5432 dbname=${TSDB_DB} user=${TSDB_USER} password=${TSDB_PASSWORD}' AS hot (TYPE postgres, READ_ONLY);
 
-SET s3_endpoint = 'minio:9000';
+-- Endpoint is templated (alongside creds) so the entrypoint's cold-tier
+-- probe and this init script share one source of truth — see
+-- duckdb_entrypoint.sh.
+SET s3_endpoint = '${MINIO_ENDPOINT}';
 SET s3_url_style = 'path';
 SET s3_use_ssl = false;
 SET s3_access_key_id = '${MINIO_ROOT_USER}';
@@ -44,7 +47,7 @@ SELECT time, chassis_id, channel_idx, schedule_id,
 CREATE OR REPLACE VIEW telemetry_cold AS
 SELECT *
   FROM read_parquet(
-    's3://lab-archive/telemetry/**/*.parquet',
+    '${COLD_GLOB}',
     hive_partitioning = 1
   );
 
