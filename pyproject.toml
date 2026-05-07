@@ -1,6 +1,6 @@
 [project]
 name = "battery-lab-sim"
-version = "0.1.4"
+version = "0.1.5"
 description = "Battery Lab Simulator — dockerized digital twin of a battery R&D lab"
 requires-python = ">=3.11"
 

@@ -35,6 +35,11 @@ TELEMETRY_SCHEMA = pa.schema(
     ]
 )
 
+# A full bench (16×32 channels at 10 Hz) produces ~18M rows/hour. Streaming
+# in 100k-row batches caps in-flight memory at ~10 MB of asyncpg Records +
+# ~2 MB of Arrow buffers per batch — independent of how big the hour is.
+_BATCH_ROWS = 100_000
+
 
 async def find_pending_hours(pool: asyncpg.Pool, cutoff_ts: datetime) -> list[datetime]:
     """Hours with telemetry data, older than cutoff, not yet in `parquet_exports`.
@@ -58,46 +63,17 @@ async def find_pending_hours(pool: asyncpg.Pool, cutoff_ts: datetime) -> list[da
     return [r["hour_start"] for r in rows]
 
 
-async def fetch_hour(pool: asyncpg.Pool, hour_start: datetime) -> pa.Table:
-    """Read one hour-aligned slice of ``telemetry`` into a pyarrow Table.
+def _records_to_batch(records: list[asyncpg.Record]) -> pa.RecordBatch:
+    """Pivot a list of asyncpg Records into a single pyarrow RecordBatch.
 
-    The half-open ``[hour_start, hour_start + 1h)`` filter aligns with
-    TimescaleDB's 1-hour chunk boundaries, so this scan typically reads
-    a single chunk — no cross-chunk JOIN cost.
+    The dict-of-lists pivot is the per-batch hot path and bounds peak memory
+    by ``_BATCH_ROWS`` regardless of the size of the source hour.
     """
-    hour_end = hour_start + timedelta(hours=1)
-    async with pool.acquire() as conn:
-        records = await conn.fetch(
-            """
-            SELECT time, chassis_id, channel_idx, schedule_id, cycle_index, step_name,
-                   voltage_v, current_a, temperature_c, soc_est
-              FROM telemetry
-             WHERE time >= $1 AND time < $2
-          ORDER BY time
-            """,
-            hour_start,
-            hour_end,
-        )
     columns: dict[str, list] = {f.name: [] for f in TELEMETRY_SCHEMA}
     for r in records:
         for k in columns:
             columns[k].append(r[k])
-    return pa.Table.from_pydict(columns, schema=TELEMETRY_SCHEMA)
-
-
-def write_parquet(table: pa.Table, s3: Any, path: str) -> int:
-    """Write a parquet file to S3. Returns the byte count actually written."""
-    with s3.open_output_stream(path) as sink:
-        pq.write_table(
-            table,
-            sink,
-            compression="zstd",
-            compression_level=3,
-            row_group_size=100_000,
-            use_dictionary=["chassis_id", "channel_idx", "schedule_id", "step_name"],
-        )
-    info = s3.get_file_info(path)
-    return int(info.size or 0)
+    return pa.RecordBatch.from_pydict(columns, schema=TELEMETRY_SCHEMA)
 
 
 async def record_export(
@@ -129,16 +105,75 @@ async def export_hour(
     bucket: str,
     hour_start: datetime,
 ) -> tuple[int, int]:
-    """Read one hour, write parquet, record. Returns (row_count, byte_count)."""
+    """Stream one hour of telemetry to a single parquet file on S3.
+
+    Returns ``(row_count, byte_count)``. Memory is bounded by
+    ``_BATCH_ROWS`` rows in flight at any time — required because a full
+    bench produces ~16-18M rows/hour and materializing the full hour as
+    Python objects before handing it to Arrow OOM-kills the 512 MB
+    container (see CHANGELOG entry for v0.1.5).
+
+    The asyncpg cursor must run inside a transaction; we hold the
+    connection for the duration of the write so the server-side portal
+    stays valid.
+    """
     path = hive_path(bucket, hour_start)
-    table = await fetch_hour(pool, hour_start)
-    row_count = table.num_rows
+    hour_end = hour_start + timedelta(hours=1)
+
+    row_count = 0
+    writer: pq.ParquetWriter | None = None
+    sink = None
+    try:
+        async with pool.acquire() as conn, conn.transaction():
+            cursor = await conn.cursor(
+                """
+                SELECT time, chassis_id, channel_idx, schedule_id, cycle_index, step_name,
+                       voltage_v, current_a, temperature_c, soc_est
+                  FROM telemetry
+                 WHERE time >= $1 AND time < $2
+              ORDER BY time
+                """,
+                hour_start,
+                hour_end,
+            )
+            while True:
+                records = await cursor.fetch(_BATCH_ROWS)
+                if not records:
+                    break
+                if writer is None:
+                    # Lazy: don't create the S3 object until we have data.
+                    # An empty hour leaves no parquet behind; it's recorded
+                    # below as a sentinel ledger row instead.
+                    sink = s3.open_output_stream(path)
+                    writer = pq.ParquetWriter(
+                        sink,
+                        TELEMETRY_SCHEMA,
+                        compression="zstd",
+                        compression_level=3,
+                        use_dictionary=[
+                            "chassis_id",
+                            "channel_idx",
+                            "schedule_id",
+                            "step_name",
+                        ],
+                    )
+                batch = _records_to_batch(records)
+                writer.write_batch(batch, row_group_size=_BATCH_ROWS)
+                row_count += batch.num_rows
+    finally:
+        if writer is not None:
+            writer.close()
+        if sink is not None:
+            sink.close()
+
     if row_count == 0:
         # Sentinel: still record the hour so we don't keep re-checking.
         await record_export(pool, hour_start, path, 0, 0)
         log.info("hour_empty", hour_start=hour_start.isoformat(), path=path)
         return 0, 0
-    byte_count = write_parquet(table, s3, path)
+
+    info = s3.get_file_info(path)
+    byte_count = int(info.size or 0)
     await record_export(pool, hour_start, path, row_count, byte_count)
     log.info(
         "hour_exported",
