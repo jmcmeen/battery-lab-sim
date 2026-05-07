@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+from collections.abc import Sequence
 
 import asyncpg
 from batterylab.chemistry import get_chemistry
@@ -23,6 +24,7 @@ from batterylab.schedule import Schedule, step_to_command
 from batterylab.time import SimTime
 
 from . import executor as ex
+from .channel_keepalive import channel_keepalive_loop
 from .context import context_publisher_loop, publish_context
 from .cycler_client import CyclerClient
 from .events import event_publisher_loop
@@ -195,11 +197,48 @@ async def _executor_loop(
     Runs at ``EXECUTOR_PERIOD_SIM_S`` cadence. Per-tick exceptions on a
     single experiment are logged and swallowed so one wedged channel
     can't take down the whole bench.
+
+    Both the kickoff sweep and the tick sweep fan out per-chassis via
+    ``asyncio.gather``. Each chassis has its own Modbus connection so
+    within a chassis we stay serial (the connection serializes anyway),
+    but across chassis we run truly in parallel. On a 256-channel bench
+    this keeps the worst-case sweep time bounded by ~32 channels' worth
+    of Modbus latency rather than 256 — critical for staying under the
+    cycler's 5 s wall-time per-channel watchdog.
     """
     while not stop.is_set():
         # Pick up any newly-inserted pending experiments.
         new_recs = await _poll_pending(pool, experiments)
-        for rec in new_recs:
+        await _kickoff_pending(
+            pool, cyclers_by_id, experiments, alerted_unreachable, new_recs
+        )
+
+        # Tick each running experiment.
+        await _tick_running(pool, cyclers_by_id, experiments)
+
+        # Drop completed/failed experiments from the active set.
+        for exp_id in [k for k, v in experiments.items() if v.status in {"completed", "failed"}]:
+            del experiments[exp_id]
+
+        await SimTime.sleep(EXECUTOR_PERIOD_SIM_S)
+
+
+async def _kickoff_pending(
+    pool: asyncpg.Pool,
+    cyclers_by_id: dict[int, CyclerClient],
+    experiments: dict[str, ex.Experiment],
+    alerted_unreachable: set[int],
+    new_recs: list[asyncpg.Record],
+) -> None:
+    """Kick off newly-pending experiments, fanning out per-chassis."""
+    if not new_recs:
+        return
+    by_chassis: dict[int, list[asyncpg.Record]] = {}
+    for rec in new_recs:
+        by_chassis.setdefault(int(rec["chassis_id"]), []).append(rec)
+
+    async def kickoff_one_chassis(chassis_id: int, recs: list[asyncpg.Record]) -> None:
+        for rec in recs:
             if not await _check_chassis_reachable(
                 pool,
                 cyclers_by_id,
@@ -212,26 +251,80 @@ async def _executor_loop(
             built = await _build_experiment(pool, rec)
             if built is None:
                 continue
-            await ex.kickoff(pool, cyclers_by_id[built.chassis_id], built)
+            try:
+                await ex.kickoff(pool, cyclers_by_id[built.chassis_id], built)
+            except OSError as e:
+                log.warning("kickoff_io_error", experiment_id=built.id, error=str(e))
+                continue
             experiments[built.id] = built
 
-        # Tick each running experiment.
-        for exp in list(experiments.values()):
-            if exp.status != "running":
-                continue
-            tick_cycler = cyclers_by_id.get(exp.chassis_id)
-            if tick_cycler is None:
-                continue
+    chassis_ids = list(by_chassis.keys())
+    results = await asyncio.gather(
+        *(kickoff_one_chassis(cid, by_chassis[cid]) for cid in chassis_ids),
+        return_exceptions=True,
+    )
+    _log_chassis_sweep_errors("kickoff", chassis_ids, results)
+
+
+async def _tick_running(
+    pool: asyncpg.Pool,
+    cyclers_by_id: dict[int, CyclerClient],
+    experiments: dict[str, ex.Experiment],
+) -> None:
+    """Step every running experiment forward by one tick, fanning out per-chassis."""
+    by_chassis: dict[int, list[ex.Experiment]] = {}
+    for exp in list(experiments.values()):
+        if exp.status != "running":
+            continue
+        if exp.chassis_id not in cyclers_by_id:
+            continue
+        by_chassis.setdefault(exp.chassis_id, []).append(exp)
+
+    if not by_chassis:
+        return
+
+    async def tick_one_chassis(chassis_id: int, exps: list[ex.Experiment]) -> None:
+        cycler = cyclers_by_id[chassis_id]
+        for exp in exps:
             try:
-                await ex.step_one_tick(pool, tick_cycler, exp)
+                await ex.step_one_tick(pool, cycler, exp)
             except OSError as e:
                 log.warning("tick_io_error", experiment_id=exp.id, error=str(e))
 
-        # Drop completed/failed experiments from the active set.
-        for exp_id in [k for k, v in experiments.items() if v.status in {"completed", "failed"}]:
-            del experiments[exp_id]
+    chassis_ids = list(by_chassis.keys())
+    results = await asyncio.gather(
+        *(tick_one_chassis(cid, by_chassis[cid]) for cid in chassis_ids),
+        return_exceptions=True,
+    )
+    _log_chassis_sweep_errors("tick", chassis_ids, results)
 
-        await SimTime.sleep(EXECUTOR_PERIOD_SIM_S)
+
+def _log_chassis_sweep_errors(
+    sweep: str,
+    chassis_ids: list[int],
+    results: Sequence[BaseException | None],
+) -> None:
+    """Log any per-chassis exceptions returned by ``asyncio.gather(return_exceptions=True)``.
+
+    The fan-out pattern (kickoff / tick / resume / keepalive) uses
+    ``return_exceptions=True`` so a wedged or unexpectedly-failing chassis
+    can't tear down the whole sweep — but we still need visibility into
+    the failure. OSError-level transient faults are already caught and
+    logged inside each per-experiment loop; what reaches here is the
+    surprise tier (asyncpg pool exhaustion, internal invariant violation,
+    bad-data dataclass instantiation). ``CancelledError`` is re-raised
+    because it must propagate to honour shutdown.
+    """
+    for chassis_id, result in zip(chassis_ids, results, strict=True):
+        if isinstance(result, asyncio.CancelledError):
+            raise result
+        if isinstance(result, BaseException):
+            log.error(
+                "chassis_sweep_failed",
+                sweep=sweep,
+                chassis_id=chassis_id,
+                error=repr(result),
+            )
 
 
 async def _poll_pending(
@@ -277,72 +370,115 @@ async def _resume_inflight(
     cyclers_by_id: dict[int, CyclerClient],
     alerted_unreachable: set[int],
 ) -> dict[str, ex.Experiment]:
-    """For every running experiment in DB, decide resume vs. fail by reading channel state."""
-    out: dict[str, ex.Experiment] = {}
+    """For every running experiment in DB, decide resume vs. fail by reading channel state.
+
+    Fans out per-chassis: each chassis processes its rows serially (Modbus
+    connection is single-threaded per chassis), but chassis run concurrently.
+    A 256-channel cold boot must finish well under the 5 s chassis dead-man
+    threshold, so a serial sweep through all rows is not safe at scale.
+
+    Each per-chassis coroutine returns a private dict; the caller merges
+    them after ``gather`` finishes. We don't mutate a shared dict from
+    within the gathered tasks — even though CPython's single-threaded
+    event loop makes that safe today, returning per-chassis results keeps
+    the contract obvious and forward-portable.
+    """
     recs = await _load_running_or_pending(pool)
+    by_chassis: dict[int, list[asyncpg.Record]] = {}
     for rec in recs:
         if rec["status"] != "running":
             continue
-        if not await _check_chassis_reachable(
-            pool,
-            cyclers_by_id,
-            alerted_unreachable,
-            rec["id"],
-            rec["chassis_id"],
-            rec["channel_idx"],
-        ):
-            continue
-        exp = await _build_experiment(pool, rec)
-        if exp is None:
-            continue
-        cycler = cyclers_by_id[exp.chassis_id]
+        by_chassis.setdefault(int(rec["chassis_id"]), []).append(rec)
 
-        snap = await cycler.read_channel(exp.channel_idx)
-        if snap.last_error != ErrorCode.NONE:
-            log.warning(
-                "experiment_failed_during_outage",
-                experiment_id=exp.id,
-                error=snap.last_error.name,
-            )
-            await ex.mark_experiment_status(pool, exp.id, "failed")
-            continue
+    async def resume_one_chassis(
+        chassis_id: int, recs: list[asyncpg.Record]
+    ) -> dict[str, ex.Experiment]:
+        local: dict[str, ex.Experiment] = {}
+        for rec in recs:
+            if not await _check_chassis_reachable(
+                pool,
+                cyclers_by_id,
+                alerted_unreachable,
+                rec["id"],
+                rec["chassis_id"],
+                rec["channel_idx"],
+            ):
+                continue
+            exp = await _build_experiment(pool, rec)
+            if exp is None:
+                continue
+            cycler = cyclers_by_id[exp.chassis_id]
 
-        # Mode-drift check — see policy block above.
-        chem = get_chemistry(exp.schedule.chemistry)
-        expected_mode, expected_setpoint = step_to_command(
-            exp.schedule.steps[exp.step_index], chem.capacity_ah_nominal
-        )
-        if snap.mode != expected_mode:
-            await _handle_resume_drift(
-                pool, cycler, exp, snap.mode, expected_mode, expected_setpoint
-            )
-            if exp.status == "failed":
+            try:
+                snap = await cycler.read_channel(exp.channel_idx)
+            except OSError as e:
+                log.warning("resume_io_error", experiment_id=exp.id, error=str(e))
+                continue
+            if snap.last_error != ErrorCode.NONE:
+                log.warning(
+                    "experiment_failed_during_outage",
+                    experiment_id=exp.id,
+                    error=snap.last_error.name,
+                )
+                await ex.mark_experiment_status(pool, exp.id, "failed")
                 continue
 
-        log.info(
-            "experiment_resumed",
-            experiment_id=exp.id,
-            cycle=exp.cycle_index,
-            step=exp.step_index,
-            channel_mode=snap.mode,
-        )
-        # Mark step started_at to "now" so end_when timers don't leak across the outage.
-        exp.step_started_sim_s = SimTime.now_sim()
-        await ex.insert_step_row(pool, exp)
-        # Re-stamp retained context. Broker may have lost retained state on
-        # restart; republishing is idempotent and ensures the ingester sees
-        # the right (schedule_id, step_name) for in-flight experiments after
-        # a full stack reboot.
-        publish_context(
-            chassis_id=exp.chassis_id,
-            channel_idx=exp.channel_idx,
-            schedule_id=exp.schedule.schedule_id,
-            step_name=exp.schedule.steps[exp.step_index].name,
-            step_index=exp.step_index,
-            cycle_index=exp.cycle_index,
-            experiment_id=exp.id,
-        )
-        out[exp.id] = exp
+            # Mode-drift check — see policy block above.
+            chem = get_chemistry(exp.schedule.chemistry)
+            expected_mode, expected_setpoint = step_to_command(
+                exp.schedule.steps[exp.step_index], chem.capacity_ah_nominal
+            )
+            if snap.mode != expected_mode:
+                await _handle_resume_drift(
+                    pool, cycler, exp, snap.mode, expected_mode, expected_setpoint
+                )
+                if exp.status == "failed":
+                    continue
+
+            log.info(
+                "experiment_resumed",
+                experiment_id=exp.id,
+                cycle=exp.cycle_index,
+                step=exp.step_index,
+                channel_mode=snap.mode,
+            )
+            # Mark step started_at to "now" so end_when timers don't leak across the outage.
+            exp.step_started_sim_s = SimTime.now_sim()
+            await ex.insert_step_row(pool, exp)
+            # Re-stamp retained context. Broker may have lost retained state on
+            # restart; republishing is idempotent and ensures the ingester sees
+            # the right (schedule_id, step_name) for in-flight experiments after
+            # a full stack reboot.
+            publish_context(
+                chassis_id=exp.chassis_id,
+                channel_idx=exp.channel_idx,
+                schedule_id=exp.schedule.schedule_id,
+                step_name=exp.schedule.steps[exp.step_index].name,
+                step_index=exp.step_index,
+                cycle_index=exp.cycle_index,
+                experiment_id=exp.id,
+            )
+            local[exp.id] = exp
+        return local
+
+    chassis_ids = list(by_chassis.keys())
+    results = await asyncio.gather(
+        *(resume_one_chassis(cid, by_chassis[cid]) for cid in chassis_ids),
+        return_exceptions=True,
+    )
+    out: dict[str, ex.Experiment] = {}
+    for chassis_id, result in zip(chassis_ids, results, strict=True):
+        if isinstance(result, asyncio.CancelledError):
+            raise result
+        if isinstance(result, BaseException):
+            log.error(
+                "chassis_sweep_failed",
+                sweep="resume",
+                chassis_id=chassis_id,
+                error=repr(result),
+            )
+            continue
+        out.update(result)
     return out
 
 
@@ -467,29 +603,32 @@ async def _run() -> None:
     # bad on resume doesn't re-alert on every executor poll.
     alerted_unreachable: set[int] = set()
 
-    async with asyncpg.create_pool(dsn, min_size=1, max_size=8) as pool:
-        # Resume any in-flight experiments before kicking off pending.
-        experiments = await _resume_inflight(pool, cyclers_by_id, alerted_unreachable)
-        log.info("resumed", count=len(experiments))
-
+    # Pool sized to MAX_CHASSIS so per-chassis fan-out (kickoff / tick /
+    # resume) doesn't queue on connection acquisition during the fast path.
+    async with asyncpg.create_pool(dsn, min_size=1, max_size=16) as pool:
         # Master-side arming handshake. Each chassis dead-man is live the
-        # moment the cycler boots (boot-armed safety pattern), but the
-        # cycler's `last_kick_sim_s` was captured at its own boot. By the
-        # time we get here, sim-time has progressed past the dead-man
-        # threshold (chamber dep + orchestrator cold-start), so the next
-        # channel that goes non-idle would trip the chassis. Establish
-        # contact now, before the executor issues any commands. The
-        # heartbeat loop takes over from here.
+        # moment the cycler boots (boot-armed safety pattern). By the time
+        # we get here, the dead-man is past threshold (cycler-boot +
+        # orchestrator cold-start), so any channel that goes non-idle
+        # trips the chassis. Kick BEFORE resume — the resume drift
+        # handler may transition channels to non-idle, and a tripped
+        # chassis would halt them on the very next safety-loop iteration.
+        # The heartbeat loop takes over from here.
         for c in cyclers:
             try:
                 await c.kick_chassis()
             except OSError as e:
                 log.warning("initial_kick_failed", host=c.host, error=str(e))
 
+        # Resume any in-flight experiments before kicking off pending.
+        experiments = await _resume_inflight(pool, cyclers_by_id, alerted_unreachable)
+        log.info("resumed", count=len(experiments))
+
         async with asyncio.TaskGroup() as tg:
             tg.create_task(heartbeat_loop(cyclers, mqtt_host, mqtt_port))
             tg.create_task(event_publisher_loop(mqtt_host, mqtt_port))
             tg.create_task(context_publisher_loop(mqtt_host, mqtt_port))
+            tg.create_task(channel_keepalive_loop(cyclers_by_id, experiments))
             tg.create_task(
                 _executor_loop(pool, cyclers_by_id, experiments, alerted_unreachable, stop)
             )
