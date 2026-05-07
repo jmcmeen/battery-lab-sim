@@ -158,6 +158,10 @@ async def export_hour(
                         ],
                     )
                 batch = _records_to_batch(records)
+                # pyarrow.parquet.ParquetWriter.write_batch has accepted
+                # row_group_size since pyarrow 14; our floor pin is >=17.
+                # One row group per batch keeps DuckDB's row-group pruning
+                # aligned with our fetch chunks.
                 writer.write_batch(batch, row_group_size=_BATCH_ROWS)
                 row_count += batch.num_rows
     finally:
