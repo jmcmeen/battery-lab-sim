@@ -49,7 +49,7 @@ services/
   analytics/                    # cycle-feature engineering (capacity, CE, R₀, dQ/dV) + R₀-jump anomaly detection
 grafana/
   provisioning/                 # YAML-provisioned datasources + dashboard provider
-  dashboards/                   # Live Bench, Cycle KPIs, Reliability
+  dashboards/                   # Live Bench, Cycle KPIs, Reliability, Chassis Overview, Storage
 schedules/                      # version-controlled YAML test schedules
 migrations/{timescale,postgres}/  # SQL DDL, applied by scripts/apply_migrations.sh — see docs/SCHEMA.md for the full schema reference
 scripts/                        # migration apply, health checks, smoke + soak runners, schedule validator, DuckDB CLI image
@@ -91,7 +91,7 @@ flowchart LR
 
     subgraph metadata["Metadata plane"]
         PG[("postgres<br/>experiments / schedules<br/>alerts / cycle_features")]
-        GRAF["grafana<br/>Live Bench · Cycle KPIs · Reliability"]
+        GRAF["grafana<br/>Live Bench · Cycle KPIs · Reliability<br/>Chassis Overview · Storage"]
     end
 
     ORCH -- "Modbus commands" --> CYC
@@ -160,6 +160,8 @@ Auto-provisioned, no clicking:
 - **Live Bench** (1 s refresh) — heatmaps for V, I (implied via current_a in telemetry), T, SOC across all 512 channels.
 - **Cycle KPIs** (5 s) — voltage trajectory, step durations, peak T per cycle, capacity vs cycle, SOH fade, dQ/dV peak shift.
 - **Reliability** (5 s) — alert log, critical-alert count, telemetry freshness, watchdog trips by chassis. The dashboard you watch during the chaos demo.
+- **Chassis Overview** (5 s) — per-chassis status table across all 16 chassis with running/failed/completed counts, schedule, max cycle, 24h alerts; chamber A/B temperature spread.
+- **Storage** (30 s) — hot tier (TSDB hypertable size, chunks, retention) + cold tier (Parquet files, rows, bytes, last export age) + Postgres metadata. Ingest-rate timeseries. Chunk and Parquet-file inventory tables.
 
 See [docs/dashboards.md](docs/dashboards.md) for the per-panel SQL.
 
