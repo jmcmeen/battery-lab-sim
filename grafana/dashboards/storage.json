@@ -1,0 +1,348 @@
+{
+  "uid": "storage",
+  "title": "Storage",
+  "tags": ["battery-lab", "storage", "infra"],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "annotations": {"list": []},
+  "templating": {"list": []},
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Telemetry rows (hot)",
+      "description": "Approximate live row count from pg_stat_user_tables.n_live_tup — cheap and bounded, unlike COUNT(*) on the hypertable.",
+      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+      "datasource": {"type": "postgres", "uid": "tsdb-telemetry"},
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT COALESCE(n_live_tup, 0)::bigint AS rows FROM pg_stat_user_tables WHERE relname = 'telemetry'"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Hot tier size",
+      "description": "TimescaleDB hypertable_size('telemetry') — sum of all chunk relations and indexes, including compressed segments.",
+      "gridPos": {"x": 6, "y": 0, "w": 6, "h": 4},
+      "datasource": {"type": "postgres", "uid": "tsdb-telemetry"},
+      "fieldConfig": {"defaults": {"unit": "bytes"}},
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT hypertable_size('telemetry')::bigint AS bytes"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Chunks (total)",
+      "description": "Number of Timescale chunks for the telemetry hypertable. Default chunk interval is 1h, so this roughly tracks hot-tier retention.",
+      "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4},
+      "datasource": {"type": "postgres", "uid": "tsdb-telemetry"},
+      "fieldConfig": {"defaults": {"unit": "none"}},
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT COUNT(*)::int AS chunks FROM timescaledb_information.chunks WHERE hypertable_name = 'telemetry'"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Hot retention (oldest row age)",
+      "description": "Age of the oldest row currently in the hot tier. The parquet_export → drop_exported_chunks pipeline trims this back to the export horizon (PARQUET_EXPORT_AGE_HOURS, default 24h) once chunks are safely in MinIO.",
+      "gridPos": {"x": 18, "y": 0, "w": 6, "h": 4},
+      "datasource": {"type": "postgres", "uid": "tsdb-telemetry"},
+      "fieldConfig": {"defaults": {"unit": "s"}},
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT COALESCE(EXTRACT(EPOCH FROM (now() - MIN(time))), 0)::float AS age_s FROM telemetry"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Cold tier files",
+      "description": "Hours fully exported to MinIO per the parquet_exports ledger. One file per closed hour.",
+      "gridPos": {"x": 0, "y": 4, "w": 6, "h": 4},
+      "datasource": {"type": "postgres", "uid": "tsdb-telemetry"},
+      "fieldConfig": {"defaults": {"unit": "none"}},
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT COUNT(*)::int AS files FROM parquet_exports"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Cold tier rows",
+      "description": "Sum of row_count across the parquet_exports ledger — i.e. total telemetry rows currently archived to MinIO.",
+      "gridPos": {"x": 6, "y": 4, "w": 6, "h": 4},
+      "datasource": {"type": "postgres", "uid": "tsdb-telemetry"},
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT COALESCE(SUM(row_count), 0)::bigint AS rows FROM parquet_exports"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Cold tier size",
+      "description": "Sum of byte_count across the parquet_exports ledger — Parquet's columnar + dictionary + Snappy compression typically gives ~10× reduction vs the hot tier.",
+      "gridPos": {"x": 12, "y": 4, "w": 6, "h": 4},
+      "datasource": {"type": "postgres", "uid": "tsdb-telemetry"},
+      "fieldConfig": {"defaults": {"unit": "bytes"}},
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT COALESCE(SUM(byte_count), 0)::bigint AS bytes FROM parquet_exports"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "Last export age",
+      "description": "Wall-time since the most recent parquet_export run successfully recorded an hour. The export period is PARQUET_EXPORT_PERIOD_S (default 1h); thresholds are 2× and 4× that. Note: an empty bench will show null indefinitely — that's expected, not stalled.",
+      "gridPos": {"x": 18, "y": 4, "w": 6, "h": 4},
+      "datasource": {"type": "postgres", "uid": "tsdb-telemetry"},
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 7200},
+              {"color": "red", "value": 14400}
+            ]
+          },
+          "unit": "s"
+        }
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT EXTRACT(EPOCH FROM (now() - MAX(exported_at)))::float AS age_s FROM parquet_exports"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "stat",
+      "title": "Postgres DB size",
+      "description": "pg_database_size('lab') — total on-disk size of the metadata database (experiments, schedules, alerts, cycle_features, experiment_steps, plus indexes and WAL).",
+      "gridPos": {"x": 0, "y": 8, "w": 6, "h": 4},
+      "datasource": {"type": "postgres", "uid": "pg-metadata"},
+      "fieldConfig": {"defaults": {"unit": "bytes"}},
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT pg_database_size(current_database())::bigint AS bytes"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "experiments rows",
+      "gridPos": {"x": 6, "y": 8, "w": 6, "h": 4},
+      "datasource": {"type": "postgres", "uid": "pg-metadata"},
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT COALESCE(n_live_tup, 0)::bigint AS rows FROM pg_stat_user_tables WHERE relname = 'experiments'"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "experiment_steps rows",
+      "gridPos": {"x": 12, "y": 8, "w": 6, "h": 4},
+      "datasource": {"type": "postgres", "uid": "pg-metadata"},
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT COALESCE(n_live_tup, 0)::bigint AS rows FROM pg_stat_user_tables WHERE relname = 'experiment_steps'"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "cycle_features rows",
+      "gridPos": {"x": 18, "y": 8, "w": 6, "h": 4},
+      "datasource": {"type": "postgres", "uid": "pg-metadata"},
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT COALESCE(n_live_tup, 0)::bigint AS rows FROM pg_stat_user_tables WHERE relname = 'cycle_features'"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Ingest rate (rows/sec, 1-minute buckets)",
+      "description": "COUNT(*) per 1-min time_bucket on the telemetry hypertable, divided by 60. Healthy 512-channel bench at 10 Hz floors around 5,120 rows/s (asserted in `make bench`); dips below that mean lost telemetry, ingester back-pressure, or a chassis dropping out.",
+      "gridPos": {"x": 0, "y": 12, "w": 24, "h": 8},
+      "datasource": {"type": "postgres", "uid": "tsdb-telemetry"},
+      "fieldConfig": {"defaults": {"unit": "rps"}},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "single"}},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT time_bucket('1m', time) AS time, COUNT(*)::float / 60.0 AS rows_per_sec FROM telemetry WHERE $__timeFilter(time) GROUP BY 1 ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "table",
+      "title": "Chunk inventory (newest first)",
+      "description": "One row per Timescale chunk on the telemetry hypertable. is_compressed=true means the chunk is read-only — modifying it requires decompress → update → recompress (CLAUDE.md gotcha). Once a chunk's covered hours are all in parquet_exports, it's eligible for the export-driven drop policy.",
+      "gridPos": {"x": 0, "y": 20, "w": 12, "h": 8},
+      "datasource": {"type": "postgres", "uid": "tsdb-telemetry"},
+      "fieldConfig": {
+        "defaults": {"custom": {"align": "left"}},
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "is_compressed"},
+            "properties": [
+              {"id": "custom.cellOptions", "value": {"type": "color-background"}},
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "true":  {"color": "green", "index": 0, "text": "yes"},
+                      "false": {"color": "transparent", "index": 1, "text": "no"}
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {"sortBy": [{"displayName": "range_start", "desc": true}]},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT chunk_name, range_start, range_end, is_compressed, pg_size_pretty(pg_total_relation_size(format('%I.%I', chunk_schema, chunk_name)::regclass)) AS size FROM timescaledb_information.chunks WHERE hypertable_name = 'telemetry' ORDER BY range_start DESC"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "table",
+      "title": "Cold tier files (most recent 50)",
+      "description": "parquet_exports ledger entries, newest exports first. One row per closed hour landed in MinIO. The s3_path is what duckdb_init.sql globs to build telemetry_cold.",
+      "gridPos": {"x": 12, "y": 20, "w": 12, "h": 8},
+      "datasource": {"type": "postgres", "uid": "tsdb-telemetry"},
+      "fieldConfig": {"defaults": {"custom": {"align": "left"}}},
+      "options": {"sortBy": [{"displayName": "exported_at", "desc": true}]},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT hour_start, exported_at, row_count, pg_size_pretty(byte_count::bigint) AS size, s3_path FROM parquet_exports ORDER BY exported_at DESC LIMIT 50"
+        }
+      ]
+    }
+  ]
+}
