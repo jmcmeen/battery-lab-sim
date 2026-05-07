@@ -15,22 +15,18 @@ LOAD postgres;
 INSTALL httpfs;
 LOAD httpfs;
 
-ATTACH 'host=timescaledb port=5432 dbname=telemetry user=lab password=lab' AS hot (TYPE postgres, READ_ONLY);
+-- Credentials are templated by envsubst at container start (see duckdb_cli
+-- entrypoint in docker-compose.yml) so they stay in lock-step with whatever
+-- the data-plane services were booted with. ATTACH requires a literal
+-- connection string (the v1.1.3 parser rejects getenv() here), which is why
+-- we template the whole file instead of using getenv() per-setting.
+ATTACH 'host=timescaledb port=5432 dbname=${TSDB_DB} user=${TSDB_USER} password=${TSDB_PASSWORD}' AS hot (TYPE postgres, READ_ONLY);
 
 SET s3_endpoint = 'minio:9000';
 SET s3_url_style = 'path';
 SET s3_use_ssl = false;
-SET s3_access_key_id = 'admin';
-SET s3_secret_access_key = 'admin12345';
-
--- Cold-tier view. `hive_partitioning=1` makes year/month/day/hour visible
--- as columns and enables partition pruning on time-range filters.
-CREATE OR REPLACE VIEW telemetry_cold AS
-SELECT *
-  FROM read_parquet(
-    's3://lab-archive/telemetry/**/*.parquet',
-    hive_partitioning = 1
-  );
+SET s3_access_key_id = '${MINIO_ROOT_USER}';
+SET s3_secret_access_key = '${MINIO_ROOT_PASSWORD}';
 
 -- Hot-tier view. Filter at this layer, not after the union, so postgres
 -- doesn't ship every row over the wire.
@@ -39,6 +35,18 @@ SELECT time, chassis_id, channel_idx, schedule_id,
        cycle_index, step_name,
        voltage_v, current_a, temperature_c, soc_est
   FROM hot.public.telemetry;
+
+-- BEGIN_COLD --
+-- The entrypoint script (duckdb_entrypoint.sh) probes the cold bucket via
+-- glob() and strips this block when zero parquet files match — read_parquet
+-- errors at view-creation time on an empty glob, which would otherwise
+-- block init and leave `telemetry_hot` unreachable on a fresh bench.
+CREATE OR REPLACE VIEW telemetry_cold AS
+SELECT *
+  FROM read_parquet(
+    's3://lab-archive/telemetry/**/*.parquet',
+    hive_partitioning = 1
+  );
 
 -- Unified view across both tiers.
 CREATE OR REPLACE VIEW telemetry_all AS
@@ -58,3 +66,6 @@ SELECT time, chassis_id, channel_idx, schedule_id,
 .print '    FROM telemetry_all'
 .print '   WHERE time > now() - INTERVAL 1 HOUR'
 .print '   GROUP BY 1, 2 ORDER BY 1, 2;'
+-- END_COLD --
+
+.print 'Hot tier ready: SELECT count(*) FROM telemetry_hot;'
