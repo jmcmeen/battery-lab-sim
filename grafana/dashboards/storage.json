@@ -17,7 +17,7 @@
       "description": "Approximate live row count from pg_stat_user_tables.n_live_tup — cheap and bounded, unlike COUNT(*) on the hypertable.",
       "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
       "datasource": {"type": "postgres", "uid": "tsdb-telemetry"},
-      "fieldConfig": {"defaults": {"unit": "short"}},
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "short"}},
       "options": {
         "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
         "colorMode": "value",
@@ -38,7 +38,7 @@
       "description": "TimescaleDB hypertable_size('telemetry') — sum of all chunk relations and indexes, including compressed segments.",
       "gridPos": {"x": 6, "y": 0, "w": 6, "h": 4},
       "datasource": {"type": "postgres", "uid": "tsdb-telemetry"},
-      "fieldConfig": {"defaults": {"unit": "bytes"}},
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "bytes"}},
       "options": {
         "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
         "colorMode": "value",
@@ -59,7 +59,7 @@
       "description": "Number of Timescale chunks for the telemetry hypertable. Default chunk interval is 1h, so this roughly tracks hot-tier retention.",
       "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4},
       "datasource": {"type": "postgres", "uid": "tsdb-telemetry"},
-      "fieldConfig": {"defaults": {"unit": "none"}},
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "none"}},
       "options": {
         "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
         "colorMode": "value",
@@ -80,7 +80,7 @@
       "description": "Age of the oldest row currently in the hot tier. The parquet_export → drop_exported_chunks pipeline trims this back to the export horizon (PARQUET_EXPORT_AGE_HOURS, default 24h) once chunks are safely in MinIO.",
       "gridPos": {"x": 18, "y": 0, "w": 6, "h": 4},
       "datasource": {"type": "postgres", "uid": "tsdb-telemetry"},
-      "fieldConfig": {"defaults": {"unit": "s"}},
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "s"}},
       "options": {
         "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
         "colorMode": "value",
@@ -101,7 +101,7 @@
       "description": "Hours fully exported to MinIO per the parquet_exports ledger. One file per closed hour.",
       "gridPos": {"x": 0, "y": 4, "w": 6, "h": 4},
       "datasource": {"type": "postgres", "uid": "tsdb-telemetry"},
-      "fieldConfig": {"defaults": {"unit": "none"}},
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "none"}},
       "options": {
         "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
         "colorMode": "value",
@@ -122,7 +122,7 @@
       "description": "Sum of row_count across the parquet_exports ledger — i.e. total telemetry rows currently archived to MinIO.",
       "gridPos": {"x": 6, "y": 4, "w": 6, "h": 4},
       "datasource": {"type": "postgres", "uid": "tsdb-telemetry"},
-      "fieldConfig": {"defaults": {"unit": "short"}},
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "short"}},
       "options": {
         "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
         "colorMode": "value",
@@ -143,7 +143,7 @@
       "description": "Sum of byte_count across the parquet_exports ledger — Parquet's columnar + dictionary + Snappy compression typically gives ~10× reduction vs the hot tier.",
       "gridPos": {"x": 12, "y": 4, "w": 6, "h": 4},
       "datasource": {"type": "postgres", "uid": "tsdb-telemetry"},
-      "fieldConfig": {"defaults": {"unit": "bytes"}},
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "bytes"}},
       "options": {
         "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
         "colorMode": "value",
@@ -164,22 +164,10 @@
       "description": "Wall-time since the most recent parquet_export run successfully recorded an hour. The export period is PARQUET_EXPORT_PERIOD_S (default 1h); thresholds are 2× and 4× that. Note: an empty bench will show null indefinitely — that's expected, not stalled.",
       "gridPos": {"x": 18, "y": 4, "w": 6, "h": 4},
       "datasource": {"type": "postgres", "uid": "tsdb-telemetry"},
-      "fieldConfig": {
-        "defaults": {
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {"color": "green", "value": null},
-              {"color": "yellow", "value": 7200},
-              {"color": "red", "value": 14400}
-            ]
-          },
-          "unit": "s"
-        }
-      },
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "s"}},
       "options": {
         "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
-        "colorMode": "background",
+        "colorMode": "value",
         "graphMode": "none"
       },
       "targets": [
@@ -197,7 +185,7 @@
       "description": "pg_database_size('lab') — total on-disk size of the metadata database (experiments, schedules, alerts, cycle_features, experiment_steps, plus indexes and WAL).",
       "gridPos": {"x": 0, "y": 8, "w": 6, "h": 4},
       "datasource": {"type": "postgres", "uid": "pg-metadata"},
-      "fieldConfig": {"defaults": {"unit": "bytes"}},
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "bytes"}},
       "options": {
         "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
         "colorMode": "value",
@@ -217,7 +205,7 @@
       "title": "experiments rows",
       "gridPos": {"x": 6, "y": 8, "w": 6, "h": 4},
       "datasource": {"type": "postgres", "uid": "pg-metadata"},
-      "fieldConfig": {"defaults": {"unit": "short"}},
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "short"}},
       "options": {
         "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
         "colorMode": "value",
@@ -237,7 +225,7 @@
       "title": "experiment_steps rows",
       "gridPos": {"x": 12, "y": 8, "w": 6, "h": 4},
       "datasource": {"type": "postgres", "uid": "pg-metadata"},
-      "fieldConfig": {"defaults": {"unit": "short"}},
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "short"}},
       "options": {
         "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
         "colorMode": "value",
@@ -257,7 +245,7 @@
       "title": "cycle_features rows",
       "gridPos": {"x": 18, "y": 8, "w": 6, "h": 4},
       "datasource": {"type": "postgres", "uid": "pg-metadata"},
-      "fieldConfig": {"defaults": {"unit": "short"}},
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "short"}},
       "options": {
         "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
         "colorMode": "value",
@@ -274,8 +262,8 @@
     {
       "id": 13,
       "type": "timeseries",
-      "title": "Ingest rate (rows/sec, 1-minute buckets)",
-      "description": "COUNT(*) per 1-min time_bucket on the telemetry hypertable, divided by 60. Healthy 512-channel bench at 10 Hz floors around 5,120 rows/s (asserted in `make bench`); dips below that mean lost telemetry, ingester back-pressure, or a chassis dropping out.",
+      "title": "Ingest rate (rows/sec, 15-second buckets)",
+      "description": "COUNT(*) per 15-second time_bucket on the telemetry hypertable, divided by 15. Healthy 512-channel bench at 10 Hz floors around 5,120 rows/s (asserted in `make bench`); dips below that mean lost telemetry, ingester back-pressure, or a chassis dropping out. The in-progress current bucket is excluded — it would otherwise always read low, since the bucket only contains the seconds elapsed so far. Expect the same low reading at the *left* edge if the dashboard time range starts mid-bucket.",
       "gridPos": {"x": 0, "y": 12, "w": 24, "h": 8},
       "datasource": {"type": "postgres", "uid": "tsdb-telemetry"},
       "fieldConfig": {"defaults": {"unit": "rps"}},
@@ -284,7 +272,7 @@
         {
           "refId": "A",
           "format": "time_series",
-          "rawSql": "SELECT time_bucket('1m', time) AS time, COUNT(*)::float / 60.0 AS rows_per_sec FROM telemetry WHERE $__timeFilter(time) GROUP BY 1 ORDER BY 1"
+          "rawSql": "SELECT time_bucket('15s', time) AS time, COUNT(*)::float / 15.0 AS rows_per_sec FROM telemetry WHERE $__timeFilter(time) AND time_bucket('15s', time) < time_bucket('15s', now()) GROUP BY 1 ORDER BY 1"
         }
       ]
     },
@@ -301,15 +289,14 @@
           {
             "matcher": {"id": "byName", "options": "is_compressed"},
             "properties": [
-              {"id": "custom.cellOptions", "value": {"type": "color-background"}},
               {
                 "id": "mappings",
                 "value": [
                   {
                     "type": "value",
                     "options": {
-                      "true":  {"color": "green", "index": 0, "text": "yes"},
-                      "false": {"color": "transparent", "index": 1, "text": "no"}
+                      "true":  {"index": 0, "text": "yes"},
+                      "false": {"index": 1, "text": "no"}
                     }
                   }
                 ]
