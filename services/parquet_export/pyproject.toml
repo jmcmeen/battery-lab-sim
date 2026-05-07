@@ -1,6 +1,6 @@
 [project]
 name = "parquet_export"
-version = "0.1.5"
+version = "0.1.6"
 description = "Daily TSDB → MinIO Parquet exporter. Hive-partitioned for DuckDB partition pruning."
 requires-python = ">=3.11"
 dependencies = [
