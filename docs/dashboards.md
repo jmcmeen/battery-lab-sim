@@ -1,6 +1,6 @@
 # Dashboards
 
-Three provisioned Grafana dashboards live under [grafana/dashboards/](../grafana/dashboards/). They auto-load into the `Battery Lab` folder at `http://localhost:3000` once `make up` brings the stack online.
+Five provisioned Grafana dashboards live under [grafana/dashboards/](../grafana/dashboards/). They auto-load into the `Battery Lab` folder at `http://localhost:3000` once `make up` brings the stack online.
 
 The provisioning provider re-reads dashboard JSON every 30 seconds, so iterating on a dashboard during demo prep is an edit + save loop — no Grafana restart. UI edits made in the browser are non-destructive but only persist until the next sweep; export them back to JSON to keep changes.
 
@@ -63,6 +63,54 @@ The watchdog story made visible. This is the dashboard you should be watching wh
 | R₀-jump anomalies (24h) | How many cells degraded suspiciously fast in the last day? | `COUNT(*)` from alerts with `source='analytics.anomaly'` |
 | R₀-jump anomalies log | Per-channel anomaly detail (latest 50) | `alerts WHERE source='analytics.anomaly'` ORDER BY created_at DESC |
 | Alert log | The full record, severity-coloured | last 100 rows from `alerts` ORDER BY created_at DESC |
+
+---
+
+## Chassis Overview
+
+**File:** [grafana/dashboards/chassis_overview.json](../grafana/dashboards/chassis_overview.json) · **uid** `chassis-overview` · **refresh** 5 s · **time** `now-30m to now`
+
+Bench-wide situational awareness in one view. Sits between Live Bench (per-channel, 1 Hz) and Cycle KPIs (per-experiment) — this is the dashboard you watch when you want to know which chassis is doing what without picking a single channel.
+
+| Panel | What it answers | Driven by |
+|---|---|---|
+| Channels running | How many of the 512 channels are currently active? | `COUNT(*)` from `experiments` where `status='running'` |
+| Active schedules | Is the bench running one schedule or several? | `COUNT(DISTINCT schedule_id)` over running experiments |
+| Telemetry freshness (worst chassis) | Is any chassis silently falling behind? | `MAX(now - last_seen)` across per-chassis last-row times in the last 5 min |
+| Critical alerts (24h) | Are we paging right now? | `COUNT(*)` from `alerts` where `severity='critical'` |
+| Per-chassis state (all 16) | One-row-per-chassis status: chamber, schedule, status counts, max cycle, 24h alerts | `WITH chassis(id) AS (SELECT generate_series(1, 16))` LEFT JOIN against per-status FILTER aggregates over `experiments`, `MAX(cycle_index)+1` over completed `experiment_steps` (running experiments only — high-water mark of the *current* run, not lifetime), and a 24h `alerts` count. Field overrides paint `failed` > 0 red, `running` green when it hits the per-chassis target |
+| Chamber A — cell temperature spread (chassis 1–8) | Are cells in the 25 °C chamber tracking together? | `time_bucket('30s', time)` MIN/AVG/MAX over `temperature_c` for chassis 1–8 |
+| Chamber B — cell temperature spread (chassis 9–16) | Same, for the 45 °C chamber | Same query, chassis 9–16 |
+
+The `generate_series` LEFT JOIN keeps the table at a stable 16 rows even when a chassis has gone silent — same trick Live Bench uses for its 16 × 32 heatmap. Chamber A/B mapping (1–8 in A, 9–16 in B) is hardcoded against CLAUDE.md's bench-layout invariant and not configurable.
+
+---
+
+## Storage
+
+**File:** [grafana/dashboards/storage.json](../grafana/dashboards/storage.json) · **uid** `storage` · **refresh** 30 s · **time** `now-6h to now`
+
+Database-tier visibility — hot/cold tier sizing, ingest-rate health, and DB metadata that was previously only inferable through `make duckdb` and shell.
+
+| Panel | What it answers | Driven by |
+|---|---|---|
+| Telemetry rows (hot) | Approximate live row count in the hypertable | `pg_stat_user_tables.n_live_tup` for `telemetry` — cheap and bounded, unlike `COUNT(*)` which full-scans |
+| Hot tier size | Total on-disk bytes for the hypertable | `hypertable_size('telemetry')` |
+| Chunks (total) | How many 1-hour chunks are open? | `COUNT(*)` from `timescaledb_information.chunks` |
+| Hot retention (oldest row age) | Wall-time since the oldest row in hot — should match `PARQUET_EXPORT_AGE_HOURS` after the export-driven drop policy fires | `now() - MIN(time)` from `telemetry` |
+| Cold tier files | Hours fully exported to MinIO | `COUNT(*)` from `parquet_exports` ledger |
+| Cold tier rows | Total telemetry rows archived to MinIO | `SUM(row_count)` from `parquet_exports` |
+| Cold tier size | Total Parquet bytes on MinIO — typically ~10× smaller than hot tier (Snappy + columnar + dictionary) | `SUM(byte_count)` from `parquet_exports` |
+| Last export age | Time since the most recent successful export | `now() - MAX(exported_at)`. Thresholds at 2× and 4× `PARQUET_EXPORT_PERIOD_S` (default 1 h) |
+| Postgres DB size | Metadata DB total size | `pg_database_size(current_database())` |
+| experiments rows | Approximate row count | `n_live_tup` from `pg_stat_user_tables` |
+| experiment_steps rows | Same | Same |
+| cycle_features rows | Same | Same |
+| Ingest rate (rows/sec, 1-minute buckets) | Is the pipeline meeting its 5,120 rows/s SLO floor? | `time_bucket('1m', time)` COUNT over `telemetry` ÷ 60 |
+| Chunk inventory (newest first) | Per-chunk size, range, and compression status — green cells mark read-only compressed chunks | `timescaledb_information.chunks` joined with `pg_total_relation_size(...)` for size; `is_compressed` mapped via field override |
+| Cold tier files (most recent 50) | When was each hour exported, where is the Parquet file? | `parquet_exports` ORDER BY `exported_at` DESC LIMIT 50 |
+
+Refresh is 30 s rather than 5 s — storage state changes slowly, and faster polling would just hammer the system catalogs. A cold-vs-hot coverage timeline (which hours sit in hot only, cold only, or both) was a v2 candidate but deferred — it'd need a DuckDB Grafana datasource that doesn't exist.
 
 ---
 
