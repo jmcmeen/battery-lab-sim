@@ -14,6 +14,17 @@ x-common-env: &common-env
 # any monitor crashes, Docker brings it back. v0.3-reliability invariant.
 x-restart: &restart unless-stopped
 
+# Container log rotation. Default Docker json-file driver has no size cap,
+# so an overnight soak at 5,120 rows/s × structlog JSON fills the host disk
+# (logs live in /var/lib/docker/containers/<id>/<id>-json.log and are only
+# reclaimed when the container is removed — which is why `docker compose
+# down` returns the disk space). Cap each container at max-size × max-file.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "${LOG_MAX_SIZE:-50m}"
+    max-file: "${LOG_MAX_FILE:-5}"
+
 # Shared cycler service shape — 16 instances differ only in CHASSIS_ID,
 # CHAMBER_ID, and host port mapping. Per CLAUDE.md invariant #2 (one
 # container per chassis), each cycler is its own service block.
@@ -23,6 +34,7 @@ x-cycler-base: &cycler-base
     dockerfile: services/cycler/Dockerfile
   networks: [lab_net]
   restart: *restart
+  logging: *default-logging
   # 256 MB headroom for one chassis × 32 channels of asyncio tasks +
   # the Modbus mirror block. Verified with `docker stats` during a 1-hour
   # soak: typical RSS ~110 MB, peak ~140 MB. Bump if you raise
@@ -40,6 +52,7 @@ x-chamber-base: &chamber-base
     dockerfile: services/chamber/Dockerfile
   networks: [lab_net]
   restart: *restart
+  logging: *default-logging
   mem_limit: 256m
   healthcheck:
     test: ["CMD-SHELL", "python -m chamber.healthcheck || exit 1"]
@@ -65,6 +78,7 @@ services:
     volumes:
       - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
     restart: *restart
+    logging: *default-logging
     mem_limit: 256m
     healthcheck:
       test: ["CMD-SHELL", "mosquitto_sub -h localhost -t '$$SYS/#' -C 1 -W 2 >/dev/null 2>&1 || exit 1"]
@@ -83,6 +97,7 @@ services:
     volumes:
       - tsdb_data:/var/lib/postgresql/data
     restart: *restart
+    logging: *default-logging
     # 512 MB covers shared_buffers + WAL + Timescale chunk cache for the
     # 512-channel × 10 Hz workload. If you scale channels past ~1024, raise
     # to 1g; the COPY ingest path is the dominant memory consumer.
@@ -104,6 +119,7 @@ services:
     volumes:
       - pg_data:/var/lib/postgresql/data
     restart: *restart
+    logging: *default-logging
     mem_limit: 512m
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lab} -d ${POSTGRES_DB:-lab}"]
@@ -124,6 +140,7 @@ services:
     volumes:
       - minio_data:/data
     restart: *restart
+    logging: *default-logging
     mem_limit: 512m
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:9000/minio/health/live || exit 1"]
@@ -152,6 +169,7 @@ services:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
     restart: *restart
+    logging: *default-logging
     mem_limit: 512m
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
@@ -414,6 +432,7 @@ services:
       mosquitto: {condition: service_healthy}
       timescaledb: {condition: service_healthy}
     restart: *restart
+    logging: *default-logging
     # 512 MB headroom for the 50k-row hard buffer + COPY batches.
     # At 5120 rows/s and 1s flush cadence, in-flight batch is ~5k rows;
     # the hard cap exists for back-pressure during DB outages.
@@ -441,6 +460,7 @@ services:
       timescaledb: {condition: service_healthy}
       minio: {condition: service_healthy}
     restart: *restart
+    logging: *default-logging
     # 512 MB covers Arrow tables held in memory while building each
     # hourly Parquet chunk. PyArrow allocators can hold reservation past
     # the apparent active set so 256m flirts with the OOM line on the
@@ -516,6 +536,7 @@ services:
       cycler_15: {condition: service_healthy}
       cycler_16: {condition: service_healthy}
     restart: *restart
+    logging: *default-logging
 
   analytics:
     build:
@@ -543,6 +564,7 @@ services:
       timescaledb: {condition: service_healthy}
       mosquitto: {condition: service_healthy}
     restart: *restart
+    logging: *default-logging
     healthcheck:
       test: ["CMD-SHELL", "python -m analytics.healthcheck || exit 1"]
       interval: 30s
@@ -568,6 +590,7 @@ services:
       mosquitto: {condition: service_healthy}
       cycler_01: {condition: service_healthy}
     restart: *restart
+    logging: *default-logging
     healthcheck:
       test: ["CMD-SHELL", "python -m watchdog.healthcheck || exit 1"]
       interval: 10s

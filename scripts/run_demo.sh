@@ -42,14 +42,30 @@ ON CONFLICT (id) DO UPDATE SET body_yaml=EXCLUDED.body_yaml, git_sha=EXCLUDED.gi
 SQL
 
 # 2. Enrol experiments — chassis × channels per the schedule's bench block.
+# Clear dependent step + feature rows from any prior run with the same id;
+# the FK CASCADEs only fire on DELETE, not ON CONFLICT DO UPDATE, so the
+# upsert alone would leave stale cycles behind and the Cycle KPIs dashboard
+# would show the previous run's high-water mark. Single transaction so an
+# INSERT failure rolls the cleanup back. See run_soak.sh for the same fix.
 $COMPOSE exec -T postgres psql -v ON_ERROR_STOP=1 -U "$PG_USER" -d "$PG_DB" <<SQL
+BEGIN;
+
+CREATE TEMP TABLE target_ids ON COMMIT DROP AS
 WITH chassis(id) AS (VALUES ${CHASSIS_VALUES})
-INSERT INTO experiments (id, chassis_id, channel_idx, schedule_id, schedule_git_sha, status)
-SELECT 'demo-${SCHEDULE_ID}-c' || c.id || '-ch' || lpad(g::text, 2, '0'),
-       c.id, g, '$SCHEDULE_ID', '$GIT_SHA', 'pending'
+SELECT 'demo-${SCHEDULE_ID}-c' || c.id || '-ch' || lpad(g::text, 2, '0') AS id,
+       c.id::int AS chassis_id, g AS channel_idx
   FROM chassis c
- CROSS JOIN generate_series(0, ${LAST}) g
+ CROSS JOIN generate_series(0, ${LAST}) g;
+
+DELETE FROM experiment_steps WHERE experiment_id IN (SELECT id FROM target_ids);
+DELETE FROM cycle_features  WHERE experiment_id IN (SELECT id FROM target_ids);
+
+INSERT INTO experiments (id, chassis_id, channel_idx, schedule_id, schedule_git_sha, status)
+SELECT id, chassis_id, channel_idx, '$SCHEDULE_ID', '$GIT_SHA', 'pending'
+  FROM target_ids
 ON CONFLICT (id) DO UPDATE SET status='pending', updated_at=now();
+
+COMMIT;
 SQL
 
 TOTAL=$((CHANNELS * ${#CHASSIS_LIST[@]}))

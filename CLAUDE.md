@@ -153,6 +153,7 @@ The hot-tier schema, the cold-tier Parquet schema, the ingester COPY column list
 3. Filter inside per-panel SQL, not in Grafana variables — the postgres datasource doesn't push down all predicates (CLAUDE.md gotcha).
 4. For heatmaps with sparse channels, use a `generate_series` cross-join LEFT JOIN to render a complete grid even when fewer than 512 channels are active. See `live_bench.json` for the pattern.
 5. Smoke test: `make up`, wait 30 s for the provisioning sweep, then open `http://localhost:3000`. UI edits don't persist across the next sweep — export them back to JSON if you want to keep them.
+6. Update the expected-set assertion in `tests/unit/test_grafana_dashboards.py::test_dashboards_directory_has_expected_files` to include the new file stem. The test enforces an exact set so unintentional drift is caught — but it also catches the legitimate add, so `make test.unit` will fail until the new stem is listed.
 
 ### Add a new cycle-derived feature
 The analytics service writes derived per-cycle data to `cycle_features` on every `events/cycle_complete` MQTT message. Adding a new feature is mostly schema + math + dashboard:

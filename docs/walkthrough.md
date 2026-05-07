@@ -78,7 +78,10 @@ being driven by a YAML schedule.
 The Modbus-TCP-and-MQTT-everywhere is intentional: the same orchestrator code
 would drive real Arbin or Espec hardware. Only the Modbus endpoint changes.
 [`docs/dashboards.md`](dashboards.md) has the per-panel SQL if you want to see
-how each visualisation is built.
+how each visualisation is built. For a high-level view across all 16 chassis
+at once, the **Chassis Overview** dashboard summarises status counts,
+schedule, max cycle, and per-chamber temperature spread in a single table —
+the bench-wide companion to Live Bench's per-channel heatmaps.
 
 ## 4. Schedules are version-controlled YAML
 
@@ -132,6 +135,12 @@ The first query reads from both tiers; the row count grows as the soak
 accumulates data. Hive partitioning means time-bounded queries prune to just
 the relevant partitions — `WHERE time > now() - INTERVAL '1 hour'` will only
 scan the hot tier, not the entire Parquet archive.
+
+The **Storage** dashboard surfaces the same two tiers visually — hypertable
+size, chunk inventory, and retention age on the hot side; the
+`parquet_exports` ledger (files, rows, bytes, last-export age) on the cold
+side. Useful for spotting an export that's stalled, or a chunk that's
+overdue for compression.
 
 ## 6. Aging signatures from real telemetry
 
@@ -220,7 +229,7 @@ Each of those has a design sketch in [`docs/future_work.md`](future_work.md).
 - [`CLAUDE.md`](../CLAUDE.md) — architectural invariants, code style,
   recipes for common changes. Read this before making any non-trivial PR.
 - [`docs/SCHEMA.md`](SCHEMA.md) — Postgres + TimescaleDB schemas side-by-side.
-- [`docs/dashboards.md`](dashboards.md) — per-panel SQL for the three Grafana
+- [`docs/dashboards.md`](dashboards.md) — per-panel SQL for the five Grafana
   dashboards.
 - [`docs/chaos.md`](chaos.md) — assertions and pre-flight requirements for
   each failure-injection scenario.

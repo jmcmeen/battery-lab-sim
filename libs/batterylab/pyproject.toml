@@ -1,6 +1,6 @@
 [project]
 name = "batterylab"
-version = "0.1.5"
+version = "0.1.6"
 description = "Shared library: cell physics, modbus map, schedule schema, sim time."
 requires-python = ">=3.11"
 dependencies = [

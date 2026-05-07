@@ -1,6 +1,6 @@
 [project]
 name = "orchestrator"
-version = "0.1.5"
+version = "0.1.6"
 description = "YAML schedule executor with idempotent resume and per-channel state machines."
 requires-python = ">=3.11"
 dependencies = [

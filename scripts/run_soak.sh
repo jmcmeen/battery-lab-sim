@@ -48,20 +48,36 @@ SQL
 
 # 2. Enrol N experiments on every chassis from the schedule in one round-trip.
 # Idempotent — re-running with status='pending' resets channels that
-# previously failed/completed.
+# previously failed/completed AND clears their dependent step + feature
+# rows from any prior run. Without the DELETEs the upsert leaves stale
+# experiment_steps / cycle_features behind (the FK CASCADEs only fire on
+# DELETE, not ON CONFLICT DO UPDATE), so dashboards keep showing the
+# previous run's high-water-mark cycle count until the fresh run climbs
+# past it. Single transaction so an INSERT failure rolls the cleanup back.
 LAST=$((CHANNELS - 1))
 CHASSIS_VALUES=$(printf '(%s),' "${CHASSIS_LIST[@]}")
 CHASSIS_VALUES="${CHASSIS_VALUES%,}"
 $COMPOSE exec -T postgres psql -v ON_ERROR_STOP=1 -U "$PG_USER" -d "$PG_DB" <<SQL
+BEGIN;
+
+CREATE TEMP TABLE target_ids ON COMMIT DROP AS
 WITH chassis(id) AS (VALUES ${CHASSIS_VALUES})
-INSERT INTO experiments (id, chassis_id, channel_idx, schedule_id, schedule_git_sha, status)
-SELECT 'soak-${SCHEDULE}-c' || c.id || '-ch' || lpad(g::text, 2, '0'),
-       c.id, g, '$SCHEDULE', '$GIT_SHA', 'pending'
+SELECT 'soak-${SCHEDULE}-c' || c.id || '-ch' || lpad(g::text, 2, '0') AS id,
+       c.id::int AS chassis_id, g AS channel_idx
   FROM chassis c
- CROSS JOIN generate_series(0, ${LAST}) g
+ CROSS JOIN generate_series(0, ${LAST}) g;
+
+DELETE FROM experiment_steps WHERE experiment_id IN (SELECT id FROM target_ids);
+DELETE FROM cycle_features  WHERE experiment_id IN (SELECT id FROM target_ids);
+
+INSERT INTO experiments (id, chassis_id, channel_idx, schedule_id, schedule_git_sha, status)
+SELECT id, chassis_id, channel_idx, '$SCHEDULE', '$GIT_SHA', 'pending'
+  FROM target_ids
 ON CONFLICT (id) DO UPDATE
    SET status='pending', updated_at=now(),
        schedule_git_sha=EXCLUDED.schedule_git_sha;
+
+COMMIT;
 SQL
 
 # 3. Sanity: confirm the rows exist and the orchestrator hasn't already
