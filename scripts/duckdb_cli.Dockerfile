@@ -3,7 +3,7 @@
 FROM debian:bookworm-slim
 ARG DUCKDB_VERSION=v1.1.3
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl unzip && \
+        ca-certificates curl unzip gettext-base && \
     arch="$(dpkg --print-architecture)" && \
     case "$arch" in \
         amd64) zip="duckdb_cli-linux-amd64.zip" ;; \
@@ -18,4 +18,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     apt-get purge -y curl unzip && \
     apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/*
-ENTRYPOINT ["duckdb"]
+COPY duckdb_entrypoint.sh /usr/local/bin/duckdb-init
+RUN chmod +x /usr/local/bin/duckdb-init
+ENTRYPOINT ["/usr/local/bin/duckdb-init"]

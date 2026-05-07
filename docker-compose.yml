@@ -463,7 +463,21 @@ services:
     networks: [lab_net]
     volumes:
       - ./scripts:/scripts:ro
-    command: ["-init", "/scripts/duckdb_init.sql"]
+    environment:
+      TSDB_USER: ${TSDB_USER:-lab}
+      TSDB_PASSWORD: ${TSDB_PASSWORD:-lab}
+      TSDB_DB: ${TSDB_DB:-telemetry}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-admin12345}
+      # Match parquet_export's MINIO_ENDPOINT / PARQUET_BUCKET so the
+      # cold-tier probe and init.sql cannot drift from where archives
+      # are actually being written.
+      MINIO_ENDPOINT: minio:9000
+      PARQUET_BUCKET: ${PARQUET_BUCKET:-lab-archive}
+    # The image's entrypoint (duckdb_entrypoint.sh) envsubst's the init
+    # script before exec'ing duckdb, so creds stay in lock-step with .env
+    # and any extra args from `make duckdb.query Q=...` pass straight
+    # through after the init runs.
     stdin_open: true
     tty: true
 
