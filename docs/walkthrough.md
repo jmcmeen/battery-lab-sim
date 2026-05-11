@@ -21,16 +21,21 @@ document.
 
 ## 1. The bench at a glance
 
-The system simulates a 16-cycler × 32-channel battery R&D bench — 512 cells
-total, split across two thermal chambers (A: 25 °C, B: 45 °C). Each chamber
-also runs a distinct chemistry by default: LCO in chamber A, NMC in chamber B —
-simulating phone-cell aging under typical (25 °C, LCO baseline) and stressed
-(45 °C, high-nickel NMC flagship) conditions. The pairing is the
-chemistry-vs-temperature matrix the analytics service is built to compare,
-and it's controllable per-cycler via `CYCLER_NN_CHEMISTRY`
-(see `.env.example`). Each cycler is its own Docker container exposing a
-Modbus TCP server on port 502 (mapped to host ports 5021–5036). Each channel
-inside a cycler is an asyncio task running an ECM cell model.
+The system simulates a 16-cycler × 32-channel consumer-electronics battery
+QA bench — 512 cells total, split across two thermal chambers (A: 25 °C,
+B: 45 °C). The two-chamber matrix encodes the phone-cell aging story: chamber
+A runs LCO (the baseline phone cathode — every smartphone before ~2020 and
+most still today) at room temperature; chamber B runs high-nickel NMC (the
+high-capacity flagship cathode) at the 45 °C stress temperature that
+accelerates SEI growth in the analytics service's R₀-jump signature.
+Silicon-carbon anode variants (`NMC+SiC`, `LCO+SiC`) are first-class
+chemistries on top of either cathode — the 2024-era flagship pairing.
+Chemistry is schedule-driven at runtime: the orchestrator writes the chassis
+CHEMISTRY Modbus register at every kickoff from `schedule.chemistry`, and
+the cycler rebuilds its 32 ECMCell instances to match. Each cycler is its
+own Docker container exposing a Modbus TCP server on port 502 (mapped to
+host ports 5021–5036). Each channel inside a cycler is an asyncio task
+running an ECM cell model.
 
 Look at `.env.example` and `docker-compose.yml` to see the topology:
 
