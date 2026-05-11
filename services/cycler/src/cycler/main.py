@@ -76,6 +76,16 @@ async def _run() -> None:
     chamber_id = os.environ.get("CHAMBER_ID")
     chemistry = os.environ.get("CHEMISTRY", "NMC")
     default_ambient_c = float(os.environ.get("DEFAULT_AMBIENT_C", "25.0"))
+    # Wall-time watchdog thresholds. Defaults match the build-guide §2.4
+    # acceptance (5.0 s) and the chaos recipe contract. The integration
+    # test fixture overrides both to 0.5 to shorten the otherwise-load-
+    # bearing wall wait that dominates the cycler shard's CI cost.
+    channel_watchdog_s = float(
+        os.environ.get("CYCLER_CHANNEL_WATCHDOG_THRESHOLD_S", "5.0")
+    )
+    chassis_watchdog_s = float(
+        os.environ.get("CYCLER_CHASSIS_WATCHDOG_THRESHOLD_S", "5.0")
+    )
 
     channels = _make_channels(n, chemistry)
     kick_state = ChassisKickState()
@@ -91,6 +101,8 @@ async def _run() -> None:
         mqtt=f"{mqtt_host}:{mqtt_port}",
         telemetry_hz=telemetry_hz,
         chamber_id=chamber_id,
+        channel_watchdog_s=channel_watchdog_s,
+        chassis_watchdog_s=chassis_watchdog_s,
     )
 
     stop = asyncio.Event()
@@ -101,8 +113,8 @@ async def _run() -> None:
     async with asyncio.TaskGroup() as tg:
         for ch in channels:
             tg.create_task(cell_loop(ch, ambient, telemetry_hz))
-            tg.create_task(safety_loop(ch))
-        tg.create_task(chassis_watchdog(channels, kick_state))
+            tg.create_task(safety_loop(ch, threshold_s=channel_watchdog_s))
+        tg.create_task(chassis_watchdog(channels, kick_state, threshold_s=chassis_watchdog_s))
         tg.create_task(
             telemetry_publisher(channels, chassis_id, mqtt_host, mqtt_port, telemetry_hz)
         )
