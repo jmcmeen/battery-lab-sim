@@ -19,10 +19,13 @@ import signal
 import time
 
 import aiomqtt
+from batterylab.alive import alive_writer
+from batterylab.fdpressure import fd_pressure_monitor
 from batterylab.log import configure as configure_log
 from batterylab.log import get
 from batterylab.time import SimTime
 
+from . import ALIVE_PATH
 from .modbus_server import run_modbus_server
 from .thermal import ThermalModel
 
@@ -101,6 +104,8 @@ async def _run() -> None:
         tg.create_task(thermal_loop(model))
         tg.create_task(run_modbus_server(model, modbus_port))
         tg.create_task(ambient_publisher(model, chamber_id, mqtt_host, mqtt_port, publish_hz))
+        tg.create_task(alive_writer(ALIVE_PATH))
+        tg.create_task(fd_pressure_monitor())
         await stop.wait()
         log.info("chamber_stopping")
         raise asyncio.CancelledError("shutdown requested")
