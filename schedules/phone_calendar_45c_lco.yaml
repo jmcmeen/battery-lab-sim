@@ -1,0 +1,21 @@
+schedule_id: phone_calendar_45c_lco
+chemistry: LCO
+bench:
+  chassis: 1-8               # Chamber A (default LCO) driven to 45 °C
+  channels_per_chassis: 32
+chamber:
+  setpoint_c: 45.0           # override chamber A's normal 25 °C — schedules can drive setpoint
+  soak_seconds: 1800
+# v0.1.8: calendar-aging study at elevated SOC and elevated temperature
+# — the silent killer in phone batteries left plugged in overnight in
+# warm pockets. Chamber A is normally 25 °C; this schedule drives it to
+# 45 °C via the chamber.setpoint_c field. The R₀-jump analytics will
+# pick up the SEI-growth signature during the 168 h hold.
+steps:
+  - {name: initial_rest,   type: rest, duration_s: 600}
+  - {name: cc_charge,      type: cc, rate_c: 0.5,  end_when: {voltage_v_above: 4.35, max_duration_s: 9000}}
+  - {name: cv_charge,      type: cv, voltage_v: 4.35, end_when: {current_a_below_c_rate: 0.05, max_duration_s: 7200}}
+  - {name: float_hold,     type: cv, voltage_v: 4.35, end_when: {max_duration_s: 604800}}   # 168 h
+  - {name: rest_after,     type: rest, duration_s: 600}
+cycle:
+  repeat: 1

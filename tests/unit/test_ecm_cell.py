@@ -61,16 +61,32 @@ def test_coulombic_efficiency_above_99pct(fresh_nmc_cell: ECMCell) -> None:
 
 # ------- 3 ---------------------------------------------------------------
 @pytest.mark.unit
-def test_thermal_runaway_latches(fresh_nmc_cell: ECMCell) -> None:
-    """Once T > 130 °C the cell latches. Subsequent steps return current=0 and stay latched."""
-    cell = fresh_nmc_cell
-    cell.temperature_c = 135.0
+@pytest.mark.parametrize(
+    ("chemistry", "below_threshold_c", "above_threshold_c"),
+    [
+        ("NMC", 125.0, 135.0),  # NMC trips at 130 °C
+        ("LCO", 145.0, 155.0),  # LCO trips at 150 °C (higher onset, more violent in reality)
+    ],
+)
+def test_thermal_runaway_latches_per_chemistry(
+    chemistry: str, below_threshold_c: float, above_threshold_c: float
+) -> None:
+    """v0.1.8: thermal-runaway threshold is per-chemistry on ChemistryParams.
+    NMC latches at 130 °C, LCO at 150 °C. The ECM reads
+    `cell.chem.thermal_runaway_c` rather than a module-level constant."""
+    chem = get_chemistry(chemistry)
+    cell = ECMCell(chem=chem, capacity_ah=chem.capacity_ah_nominal, soc=1.0)
 
+    # Below threshold: no latch yet.
+    cell.temperature_c = below_threshold_c
+    state = cell.step(current_a=2.0, dt_s=DT, ambient_c=25.0)
+    assert state.latched_error == ErrorCode.NONE
+
+    # Above threshold: latches, subsequent steps stay latched with current = 0.
+    cell.temperature_c = above_threshold_c
     state = cell.step(current_a=2.0, dt_s=DT, ambient_c=25.0)
     assert state.latched_error == ErrorCode.THERMAL_RUNAWAY
     assert state.current_a == 0.0
-
-    # Even a "normal" current command after the latch returns 0 current and stays latched.
     for _ in range(10):
         s = cell.step(current_a=1.0, dt_s=DT, ambient_c=25.0)
         assert s.latched_error == ErrorCode.THERMAL_RUNAWAY

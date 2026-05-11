@@ -14,7 +14,7 @@ understand the design space.
 | Telemetry cold tier | Parquet on MinIO (S3-compatible) | Object storage, columnar, queryable from anywhere. Industry-standard time-series cold tier. Hive partitioning enables partition pruning for time-bounded queries. |
 | Cross-tier query layer | DuckDB | Reads Postgres + Parquet/S3 in one SQL session. Eliminates ETL between tiers — analysts query the union view. |
 | Metadata DB | Plain Postgres | Strict separation of concerns: telemetry never lives here, metadata never goes to TimescaleDB (`CLAUDE.md` invariant #3). |
-| Cell physics | ECM (1st-order RC) | Fast, runs 32 cells per cycler at 10 Hz easily on commodity hardware. Higher-fidelity PyBaMM SPM is in `docs/future_work.md` — variable solver cost was prohibitive without a per-cell solver budget framework. |
+| Cell physics | ECM (1st-order RC) | Fast, runs 32 cells per cycler at 10 Hz easily on commodity hardware. Higher-fidelity electrochemical models would fight the cycler's wall-clock watchdog without a per-cell solver budget framework — see `docs/future_work.md`. |
 | Orchestrator | Python + `transitions` + asyncio | State machines first-class; async for I/O. Avoids spinning a separate worker per channel. |
 | Schedules | YAML in Git, parsed via Pydantic | Version-controlled, schema-validated, PR-reviewable. Every `experiments` row records the schedule's git SHA — full reproducibility from telemetry row to commit. |
 | Dashboards | Grafana provisioned via YAML | Reproducible, no clicking. Datasources and dashboards live in `grafana/provisioning/`; the file is the source of truth. |
@@ -37,6 +37,3 @@ A few choices worth being explicit about — these come up in PR discussions:
   Mosquitto runs in 30 MB and starts in 200 ms.
 - **psycopg over asyncpg.** asyncpg is ~3× faster for `COPY` at our row
   rates and integrates naturally with the asyncio-everything style.
-- **PyBaMM as the default cell model.** Solver cost variability fights the
-  cycler watchdog (real-time guarantees in a sim engine). ECM is the right
-  default; PyBaMM lives behind a feature flag when it lands.

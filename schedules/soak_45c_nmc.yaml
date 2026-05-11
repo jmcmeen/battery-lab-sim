@@ -1,0 +1,25 @@
+schedule_id: soak_45c_nmc
+chemistry: NMC
+bench:
+  chassis: 9-16              # Chamber B is 45 °C → cyclers 09-16 (default NMC)
+  channels_per_chassis: 32
+chamber:
+  setpoint_c: 45.0
+  soak_seconds: 1800
+# v0.1.8: phone-grade NMC at elevated temperature (45 °C) — the headline
+# accelerated-aging schedule. Chamber B defaults to NMC in docker-compose
+# so this runs against the default bench with no overrides. The contrast
+# with soak_25c_lco (LCO at 25 °C) is the chemistry-vs-temperature matrix
+# the analytics service is built to compare.
+#
+# Voltage cutoffs match phone-grade NMC's 4.40 V V_max (v0.1.8 bumped
+# from 4.20 V for the EV-grade NMC the project shipped with earlier).
+steps:
+  - {name: initial_rest,   type: rest, duration_s: 600}
+  - {name: cc_charge,      type: cc, rate_c: 0.5,  end_when: {voltage_v_above: 4.40, max_duration_s: 9000}}
+  - {name: cv_charge,      type: cv, voltage_v: 4.40, end_when: {current_a_below_c_rate: 0.05, max_duration_s: 7200}}
+  - {name: rest_top,       type: rest, duration_s: 600}
+  - {name: cc_discharge,   type: cc, rate_c: -1.0, end_when: {voltage_v_below: 3.00, max_duration_s: 5400}}
+  - {name: rest_bottom,    type: rest, duration_s: 600}
+cycle:
+  repeat: 1000

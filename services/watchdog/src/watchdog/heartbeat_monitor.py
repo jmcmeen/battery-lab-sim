@@ -28,8 +28,8 @@ from .dedupe import EdgeTrigger
 log = get("watchdog.heartbeat")
 
 HEARTBEAT_TOPIC = "heartbeat/orchestrator"
-HEARTBEAT_THRESHOLD_S = 10.0  # wall seconds
-POLL_PERIOD_S = 2.0  # wall seconds
+DEFAULT_THRESHOLD_S = 10.0  # wall seconds — chaos recipes assume this floor
+DEFAULT_POLL_S = 2.0  # wall seconds
 
 DEDUPE_KEY = ("orchestrator_heartbeat_stale",)
 
@@ -53,12 +53,25 @@ class HeartbeatState:
         self.last_rx_monotonic = time.monotonic()
 
 
-async def heartbeat_check_loop(sink: AlertSink, state: HeartbeatState, edge: EdgeTrigger) -> None:
-    """Wall-time poll loop. Rising edge of staleness → critical alert."""
+async def heartbeat_check_loop(
+    sink: AlertSink,
+    state: HeartbeatState,
+    edge: EdgeTrigger,
+    *,
+    threshold_s: float = DEFAULT_THRESHOLD_S,
+    poll_s: float = DEFAULT_POLL_S,
+) -> None:
+    """Wall-time poll loop. Rising edge of staleness → critical alert.
+
+    ``threshold_s`` defaults to 10 because the chaos recipes in CLAUDE.md
+    ("Add a new chaos scenario" #3) treat 10 wall-s as the canonical
+    heartbeat-stale floor — lowering it would break those tests; raising
+    it delays detection.
+    """
     while True:
-        await asyncio.sleep(POLL_PERIOD_S)
+        await asyncio.sleep(poll_s)
         gap = time.monotonic() - state.last_rx_monotonic
-        stale = gap > HEARTBEAT_THRESHOLD_S
+        stale = gap > threshold_s
         if edge.update(DEDUPE_KEY, stale):
             log.error("orchestrator_heartbeat_stale", gap_s=round(gap, 2))
             await sink.emit(

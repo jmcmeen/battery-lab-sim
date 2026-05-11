@@ -1,6 +1,6 @@
 [project]
 name = "ingester"
-version = "0.1.7"
+version = "0.1.8"
 description = "MQTT → TimescaleDB COPY ingester."
 requires-python = ">=3.11"
 dependencies = [

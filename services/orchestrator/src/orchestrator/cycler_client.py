@@ -155,3 +155,21 @@ class CyclerClient:
         if rsp.isError():
             raise OSError(f"read CHASSIS_WATCHDOG_STATUS failed: {rsp}")
         return int(rsp.registers[0])
+
+    async def read_chassis_chemistry(self) -> int:
+        """Read the chassis CHEMISTRY register. Returns the on-wire
+        chemistry id (see modbus_maps.ChemistryId). Used by ``kickoff``
+        to verify a chemistry write took effect before issuing the first
+        command for an experiment."""
+        rsp = await self._client.read_holding_registers(int(ChassisReg.CHEMISTRY), count=1)
+        if rsp.isError():
+            raise OSError(f"read CHASSIS_CHEMISTRY failed: {rsp}")
+        return int(rsp.registers[0])
+
+    async def write_chassis_chemistry(self, chemistry_id: int) -> None:
+        """Write the chassis CHEMISTRY register. The cycler rebuilds every
+        channel's ECMCell with the new chemistry under an event-loop
+        atomic swap if the value differs from current. Caller should
+        ``read_chassis_chemistry()`` afterwards to verify the rebuild
+        landed (rejected unknown ids leave the registers unchanged)."""
+        await self._client.write_register(int(ChassisReg.CHEMISTRY), int(chemistry_id))

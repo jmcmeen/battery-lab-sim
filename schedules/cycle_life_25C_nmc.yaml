@@ -1,0 +1,22 @@
+schedule_id: cycle_life_25C_nmc
+chemistry: NMC
+bench:
+  chassis: 1-8               # Chamber A (25 °C)
+  channels_per_chassis: 32
+chamber:
+  setpoint_c: 25.0
+  soak_seconds: 0
+# v0.1.8: phone-grade NMC cycle-life test at 25 °C. Same as soak_25c_nmc
+# but without the initial chamber soak — used when the bench is already
+# at temperature and you want to start cycling immediately. Chamber A
+# defaults LCO; the orchestrator writes the chassis CHEMISTRY register at
+# kickoff so the cycler rebuilds its cells to NMC for this schedule.
+steps:
+  - {name: initial_rest,  type: rest, duration_s: 600}
+  - {name: cc_charge,     type: cc, rate_c: 0.5, end_when: {voltage_v_above: 4.40, max_duration_s: 9000}}
+  - {name: cv_charge,     type: cv, voltage_v: 4.40, end_when: {current_a_below_c_rate: 0.05, max_duration_s: 7200}}
+  - {name: rest_top,      type: rest, duration_s: 600}
+  - {name: cc_discharge,  type: cc, rate_c: -1.0, end_when: {voltage_v_below: 3.00, max_duration_s: 5400}}
+  - {name: rest_bottom,   type: rest, duration_s: 600}
+cycle:
+  repeat: 1000

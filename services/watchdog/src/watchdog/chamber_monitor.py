@@ -28,10 +28,10 @@ from .dedupe import EdgeTrigger
 log = get("watchdog.chamber")
 
 CHAMBER_TOPIC = "chamber/+/ambient"
-BREACH_BAND_C = 5.0  # °C deviation
-BREACH_DURATION_S = 300.0  # wall seconds
-STARTUP_GRACE_S = 60.0  # wall seconds — chamber soak-in
-CHECK_PERIOD_S = 5.0  # wall seconds — how often we sweep state
+DEFAULT_BREACH_BAND_C = 5.0  # °C deviation outside which we start a breach timer
+DEFAULT_BREACH_DURATION_S = 300.0  # wall seconds — breach must persist this long to alert
+DEFAULT_STARTUP_GRACE_S = 60.0  # wall seconds — chamber soak-in
+DEFAULT_CHECK_PERIOD_S = 5.0  # wall seconds — how often we sweep state
 
 
 @dataclass
@@ -43,17 +43,32 @@ class _ChamberState:
 
 
 class ChamberStates:
-    """Per-chamber rolling state. Keyed by chamber_id."""
+    """Per-chamber rolling state. Keyed by chamber_id.
 
-    def __init__(self) -> None:
+    Thresholds are instance fields so the same module can host monitors
+    with different tunings (production vs. integration tests) without
+    mutating module-level constants. Defaults match the historical
+    module constants.
+    """
+
+    def __init__(
+        self,
+        *,
+        breach_band_c: float = DEFAULT_BREACH_BAND_C,
+        breach_duration_s: float = DEFAULT_BREACH_DURATION_S,
+        startup_grace_s: float = DEFAULT_STARTUP_GRACE_S,
+    ) -> None:
         self._by_id: dict[str, _ChamberState] = {}
         self._started_monotonic = time.monotonic()
+        self.breach_band_c = breach_band_c
+        self.breach_duration_s = breach_duration_s
+        self.startup_grace_s = startup_grace_s
 
     def grace_active(self) -> bool:
         """True while the wall-time startup grace window is open. The
         chamber thermal model needs minutes to converge from cold boot —
         firing on the soak-in transient would be noise."""
-        return (time.monotonic() - self._started_monotonic) < STARTUP_GRACE_S
+        return (time.monotonic() - self._started_monotonic) < self.startup_grace_s
 
     def update_from_msg(self, payload: bytes) -> None:
         """Parse one ``chamber/<id>/ambient`` MQTT payload and fold its
@@ -73,7 +88,7 @@ class ChamberStates:
         st.last_setpoint_c = setpoint
         st.last_msg_monotonic = time.monotonic()
 
-        in_breach = abs(measured - setpoint) > BREACH_BAND_C
+        in_breach = abs(measured - setpoint) > self.breach_band_c
         if in_breach and st.breach_started_monotonic is None:
             st.breach_started_monotonic = time.monotonic()
         elif not in_breach:
@@ -85,25 +100,31 @@ class ChamberStates:
         return self._by_id.items()
 
 
-def is_breach_sustained(st: _ChamberState) -> bool:
+def is_breach_sustained(st: _ChamberState, breach_duration_s: float) -> bool:
     """True when the chamber has been outside the band for longer than
-    ``BREACH_DURATION_S`` wall seconds — i.e., not a transient sensor
+    ``breach_duration_s`` wall seconds — i.e., not a transient sensor
     blip but real drift. Returns False when no breach is in progress."""
     if st.breach_started_monotonic is None:
         return False
-    return (time.monotonic() - st.breach_started_monotonic) > BREACH_DURATION_S
+    return (time.monotonic() - st.breach_started_monotonic) > breach_duration_s
 
 
-async def chamber_check_loop(sink: AlertSink, states: ChamberStates, edge: EdgeTrigger) -> None:
+async def chamber_check_loop(
+    sink: AlertSink,
+    states: ChamberStates,
+    edge: EdgeTrigger,
+    *,
+    check_period_s: float = DEFAULT_CHECK_PERIOD_S,
+) -> None:
     """Periodic sweep that emits a warning alert when any chamber's
     breach has persisted past the duration threshold. Edge-triggered so
     a sustained breach yields exactly one alert per rising edge."""
     while True:
-        await asyncio.sleep(CHECK_PERIOD_S)
+        await asyncio.sleep(check_period_s)
         if states.grace_active():
             continue
         for cid, st in states.items():
-            sustained = is_breach_sustained(st)
+            sustained = is_breach_sustained(st, states.breach_duration_s)
             key = ("chamber_temp_breach", cid)
             if edge.update(key, sustained):
                 log.warning(

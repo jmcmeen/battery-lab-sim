@@ -38,14 +38,21 @@ def step_calendar_lli(
 def step_throughput_lli(
     chem: ChemistryParams, age: AgingState, delta_throughput_ah: float
 ) -> float:
-    """LLI from cycling — coupled to throughput^0.5."""
+    """LLI from cycling — coupled to throughput^0.5.
+
+    Multiplied by ``chem.anode_swelling_factor`` so silicon-carbon anodes
+    fade ~50 % faster than graphite at the same throughput. Si-C anodes
+    cycle through large volume changes during (de)lithiation and the
+    cumulative mechanical fatigue accelerates LLI compared to graphite's
+    intercalation-only volume change.
+    """
     age.cumulative_throughput_ah += abs(delta_throughput_ah)
     delta = chem.k_cyc * math.sqrt(
         age.cumulative_throughput_ah / chem.capacity_ah_nominal
     ) - chem.k_cyc * math.sqrt(
         max(0.0, age.cumulative_throughput_ah - abs(delta_throughput_ah)) / chem.capacity_ah_nominal
     )
-    delta = max(delta, 0.0)
+    delta = max(delta, 0.0) * chem.anode_swelling_factor
     age.q_loss_lli += delta
     return delta
 

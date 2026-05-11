@@ -9,6 +9,7 @@ import os
 import sys
 
 import asyncpg
+from batterylab.db import make_dsn
 
 
 async def _ping(dsn: str, label: str) -> int:
@@ -29,19 +30,19 @@ async def _ping(dsn: str, label: str) -> int:
 async def _check() -> int:
     """Ping Postgres + TimescaleDB. Returns nonzero if either is unreachable
     so docker marks the container unhealthy and a restart can be triggered."""
-    pg = (
-        f"postgresql://{os.environ.get('PG_USER', 'lab')}:"
-        f"{os.environ.get('PG_PASSWORD', 'lab')}@"
-        f"{os.environ.get('PG_HOST', 'postgres')}:"
-        f"{os.environ.get('PG_PORT', '5432')}/"
-        f"{os.environ.get('PG_DB', 'lab')}"
+    pg = make_dsn(
+        os.environ.get("PG_USER", "lab"),
+        os.environ.get("PG_PASSWORD", "lab"),
+        os.environ.get("PG_HOST", "postgres"),
+        os.environ.get("PG_PORT", "5432"),
+        os.environ.get("PG_DB", "lab"),
     )
-    tsdb = (
-        f"postgresql://{os.environ.get('TSDB_USER', 'lab')}:"
-        f"{os.environ.get('TSDB_PASSWORD', 'lab')}@"
-        f"{os.environ.get('TSDB_HOST', 'timescaledb')}:"
-        f"{os.environ.get('TSDB_PORT', '5432')}/"
-        f"{os.environ.get('TSDB_DB', 'telemetry')}"
+    tsdb = make_dsn(
+        os.environ.get("TSDB_USER", "lab"),
+        os.environ.get("TSDB_PASSWORD", "lab"),
+        os.environ.get("TSDB_HOST", "timescaledb"),
+        os.environ.get("TSDB_PORT", "5432"),
+        os.environ.get("TSDB_DB", "telemetry"),
     )
     rc1 = await _ping(pg, "postgres")
     rc2 = await _ping(tsdb, "timescaledb")

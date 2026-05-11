@@ -28,11 +28,11 @@ from .dedupe import EdgeTrigger
 
 log = get("watchdog.chassis")
 
-CHASSIS_POLL_SIM_S = 5.0
+DEFAULT_POLL_SIM_S = 5.0
 # At startup the cycler's CHASSIS_WATCHDOG_STATUS register can briefly read 1
 # before the cycler clears it. Skip emit on the first poll so we don't trip
 # every chassis at boot — real trips will fire on the next cycle.
-STARTUP_GRACE_POLLS = 1
+DEFAULT_STARTUP_GRACE_POLLS = 1
 
 
 class ChassisProbe:
@@ -79,7 +79,12 @@ class ChassisProbe:
 
 
 async def chassis_monitor_loop(
-    sink: AlertSink, probes: list[ChassisProbe], edge: EdgeTrigger
+    sink: AlertSink,
+    probes: list[ChassisProbe],
+    edge: EdgeTrigger,
+    *,
+    poll_sim_s: float = DEFAULT_POLL_SIM_S,
+    startup_grace_polls: int = DEFAULT_STARTUP_GRACE_POLLS,
 ) -> None:
     """Long-running poll loop: read each chassis's watchdog status and
     emit edge-triggered alerts for trip/unreachable transitions.
@@ -91,9 +96,9 @@ async def chassis_monitor_loop(
     """
     poll_count = 0
     while True:
-        await SimTime.sleep(CHASSIS_POLL_SIM_S)
+        await SimTime.sleep(poll_sim_s)
         poll_count += 1
-        in_grace = poll_count <= STARTUP_GRACE_POLLS
+        in_grace = poll_count <= startup_grace_polls
         for p in probes:
             tripped_key = ("chassis_watchdog_tripped", p.chassis_id)
             unreachable_key = ("chassis_unreachable", p.chassis_id)

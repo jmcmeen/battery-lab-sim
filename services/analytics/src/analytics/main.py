@@ -15,6 +15,7 @@ import signal
 
 import aiomqtt
 import asyncpg
+from batterylab.db import make_dsn
 from batterylab.log import configure as configure_log
 from batterylab.log import get
 
@@ -110,8 +111,8 @@ async def _run() -> None:
         r0_jump_threshold_pct=r0_jump_threshold_pct,
     )
 
-    pg_dsn = f"postgresql://{pg_user}:{pg_pw}@{pg_host}:{pg_port}/{pg_db}"
-    tsdb_dsn = f"postgresql://{tsdb_user}:{tsdb_pw}@{tsdb_host}:{tsdb_port}/{tsdb_db}"
+    pg_dsn = make_dsn(pg_user, pg_pw, pg_host, pg_port, pg_db)
+    tsdb_dsn = make_dsn(tsdb_user, tsdb_pw, tsdb_host, tsdb_port, tsdb_db)
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()

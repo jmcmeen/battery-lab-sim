@@ -1,0 +1,24 @@
+schedule_id: phone_fastcharge_lco
+chemistry: LCO
+bench:
+  chassis: 1-8               # Chamber A (25 °C, default LCO)
+  channels_per_chassis: 32
+chamber:
+  setpoint_c: 25.0
+  soak_seconds: 600
+# v0.1.8: multi-stage fast-charge profile mirroring real flagship phone
+# protocols. Every modern phone OEM uses step-charge (2 C → 1.5 C → 1 C),
+# not flat CC-CV — the high initial rate exploits the cell's low-SOC
+# headroom for fastest time-to-80 %, then steps down to protect the
+# cathode at high SOC. Headline LCO cycle-life test for the v0.1.8 pivot.
+steps:
+  - {name: initial_rest,     type: rest, duration_s: 60}
+  - {name: cc_2c,            type: cc, rate_c: 2.0,  end_when: {voltage_v_above: 4.00, max_duration_s: 1200}}
+  - {name: cc_1_5c,          type: cc, rate_c: 1.5,  end_when: {voltage_v_above: 4.20, max_duration_s: 1200}}
+  - {name: cc_1c,            type: cc, rate_c: 1.0,  end_when: {voltage_v_above: 4.35, max_duration_s: 1800}}
+  - {name: cv_charge,        type: cv, voltage_v: 4.35, end_when: {current_a_below_c_rate: 0.05, max_duration_s: 3600}}
+  - {name: rest_top,         type: rest, duration_s: 300}
+  - {name: cc_discharge,     type: cc, rate_c: -1.0, end_when: {voltage_v_below: 3.00, max_duration_s: 5400}}
+  - {name: rest_bottom,      type: rest, duration_s: 300}
+cycle:
+  repeat: 500

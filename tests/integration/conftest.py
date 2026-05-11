@@ -14,6 +14,7 @@ import socket
 from collections.abc import AsyncIterator, Iterator
 
 import pytest
+from batterylab.db import make_dsn
 from testcontainers.core.container import DockerContainer
 from testcontainers.core.wait_strategies import LogMessageWaitStrategy
 from testcontainers.postgres import PostgresContainer
@@ -77,7 +78,7 @@ def tsdb_container() -> Iterator[str]:
     try:
         host = c.get_container_host_ip()
         port = int(c.get_exposed_port(5432))
-        dsn = f"postgresql://lab:lab@{host}:{port}/telemetry"
+        dsn = make_dsn("lab", "lab", host, port, "telemetry")
 
         root = Path(__file__).resolve().parents[2]
         tsdb_sql = [p.read_text() for p in sorted((root / "migrations" / "timescale").glob("*.sql"))]
@@ -113,7 +114,7 @@ def postgres_metadata() -> Iterator[str]:
     try:
         host = container.get_container_host_ip()
         port = int(container.get_exposed_port(5432))
-        dsn = f"postgresql://lab:lab@{host}:{port}/lab"
+        dsn = make_dsn("lab", "lab", host, port, "lab")
 
         from pathlib import Path
 
@@ -165,7 +166,7 @@ async def cycler_running(mqtt_broker, free_modbus_port, monkeypatch) -> AsyncIte
     )
     from cycler.telemetry import telemetry_publisher
 
-    channels = _make_channels(n_channels)
+    channels = _make_channels(n_channels, "NMC")
     kick_state = ChassisKickState()
     ambient = make_provider(AmbientState(default_c=25.0))
 

@@ -22,10 +22,15 @@ document.
 ## 1. The bench at a glance
 
 The system simulates a 16-cycler × 32-channel battery R&D bench — 512 cells
-total, split across two thermal chambers (A: 25 °C, B: 45 °C). Each cycler is
-its own Docker container exposing a Modbus TCP server on port 502 (mapped to
-host ports 5021–5036). Each channel inside a cycler is an asyncio task running
-an ECM cell model.
+total, split across two thermal chambers (A: 25 °C, B: 45 °C). Each chamber
+also runs a distinct chemistry by default: LCO in chamber A, NMC in chamber B —
+simulating phone-cell aging under typical (25 °C, LCO baseline) and stressed
+(45 °C, high-nickel NMC flagship) conditions. The pairing is the
+chemistry-vs-temperature matrix the analytics service is built to compare,
+and it's controllable per-cycler via `CYCLER_NN_CHEMISTRY`
+(see `.env.example`). Each cycler is its own Docker container exposing a
+Modbus TCP server on port 502 (mapped to host ports 5021–5036). Each channel
+inside a cycler is an asyncio task running an ECM cell model.
 
 Look at `.env.example` and `docker-compose.yml` to see the topology:
 
@@ -71,7 +76,7 @@ Open Grafana at <http://localhost:3000> and find the **Live Bench** dashboard
 
 You're looking at the V / I / T / SOC heatmaps for all 512 channels, sourced
 directly from TimescaleDB. Each cell is a real ECM with calibrated chemistry
-parameters (NMC and LFP — see
+parameters (LCO and NMC plus silicon-carbon anode variants — see
 [`libs/batterylab/src/batterylab/chemistry.py`](../libs/batterylab/src/batterylab/chemistry.py))
 being driven by a YAML schedule.
 
@@ -156,7 +161,7 @@ Severson-style dQ/dV peaks. One row per `(experiment_id, cycle_index)` lands
 in the `cycle_features` Postgres table.
 
 If you've been soaking the 45 °C schedule, the dQ/dV peaks panel shows peak
-voltages shifting as the cell ages — this is the LFP knee migration / NMC
+voltages shifting as the cell ages — this is the NMC peak shift / LCO
 peak intensity loss signature from Severson et al., *Nature Energy* 2019. The
 R₀ trace climbs cycle-over-cycle as resistance grows.
 
@@ -213,9 +218,9 @@ deliberately does not include:
 
 - Liquid electrolyte transport, SEI chemistry at the molecular level, or
   dendrite growth modeling.
-- High-fidelity PyBaMM cell physics. Prototyped and pulled — variable solver
-  cost was incompatible with the cycler's wall-clock watchdog without a
-  per-cell solver budget framework. See [`docs/future_work.md`](future_work.md).
+- Variable-cost cell physics (electrochemical / SPM / DFN). Excluded because
+  solver-time variance breaks the wall-clock cycler watchdog without a
+  per-cell solver budget framework — see [`docs/future_work.md`](future_work.md).
 - A SCPI/PyVISA DAQ service.
 - Apache Iceberg table format with schema evolution.
 - BMS-style cell balancing across simulated modules.

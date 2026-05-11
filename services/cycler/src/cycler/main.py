@@ -38,18 +38,27 @@ from .telemetry import telemetry_publisher
 log = get("cycler.main")
 
 
-def _make_channels(n: int) -> list[Channel]:
-    """Build ``n`` channels seeded with NMC ECM cells at 50% SOC.
+def _make_channels(n: int, chemistry: str) -> list[Channel]:
+    """Build ``n`` channels seeded with ECM cells of ``chemistry`` at 50% SOC.
 
-    Chemistry hard-coded to NMC because the soak/cycle-life schedules in
-    the repo are tuned for it; switching chemistry per chassis would
-    require a per-channel chemistry env var, which we don't need yet.
+    Chemistry is uniform across the chassis (every channel in this
+    container shares the cell parameters) — the deployment is expected to
+    co-locate same-chemistry cells in one chassis and use ``CHEMISTRY``
+    env to set it. ``get_chemistry`` raises ``ValueError`` on an unknown
+    name, which the cycler surfaces at startup rather than as silent bad
+    physics. The orchestrator-side validation (schedule.chemistry vs
+    cycler.chemistry) is deferred to v0.1.9 with a new Modbus register;
+    for now the contract is operator-side.
+
+    Channels boot with chemistry-correct safety envelopes — V_max is
+    pulled from ``chem.v_max_mv`` (NMC=4400, LCO=4350) rather than the
+    Channel dataclass's generic 4500-mV sentinel.
     """
-    chem = get_chemistry("NMC")
+    chem = get_chemistry(chemistry)
     channels: list[Channel] = []
     for idx in range(n):
         cell = ECMCell(chem=chem, capacity_ah=chem.capacity_ah_nominal, soc=0.5)
-        channels.append(Channel(idx=idx, cell=cell))
+        channels.append(Channel(idx=idx, cell=cell, safety_v_max_mv=chem.v_max_mv))
     return channels
 
 
@@ -65,9 +74,10 @@ async def _run() -> None:
     mqtt_port = int(os.environ.get("MQTT_PORT", "1883"))
     telemetry_hz = int(os.environ.get("TELEMETRY_HZ", "10"))
     chamber_id = os.environ.get("CHAMBER_ID")
+    chemistry = os.environ.get("CHEMISTRY", "NMC")
     default_ambient_c = float(os.environ.get("DEFAULT_AMBIENT_C", "25.0"))
 
-    channels = _make_channels(n)
+    channels = _make_channels(n, chemistry)
     kick_state = ChassisKickState()
     ambient_state = AmbientState(default_c=default_ambient_c)
     ambient = make_provider(ambient_state)
@@ -76,6 +86,7 @@ async def _run() -> None:
         "cycler_starting",
         chassis_id=chassis_id,
         channels=n,
+        chemistry=chemistry,
         modbus_port=modbus_port,
         mqtt=f"{mqtt_host}:{mqtt_port}",
         telemetry_hz=telemetry_hz,

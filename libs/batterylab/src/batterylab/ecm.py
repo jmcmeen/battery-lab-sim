@@ -13,8 +13,6 @@ from . import degradation as deg
 from .chemistry import ChemistryParams
 from .models import CellState, ErrorCode
 
-THERMAL_RUNAWAY_C = 130.0
-
 
 @dataclass
 class ECMCell:
@@ -86,11 +84,11 @@ class ECMCell:
         ) / self.chem.thermal_mass_j_per_k
         self.temperature_c += dt_temp * dt_s
 
-        # Thermal runaway latches the cell (separator melt).
-        if self.fault == "thermal_runaway" and self.temperature_c > THERMAL_RUNAWAY_C:
-            self.latched_error = ErrorCode.THERMAL_RUNAWAY
-            return self._read_state(latched=True)
-        if self.temperature_c > THERMAL_RUNAWAY_C:
+        # Thermal runaway latches the cell (separator melt). Per-chemistry
+        # threshold: NMC ~130 °C, LCO ~150 °C — the LCO onset is more
+        # violent due to oxygen release from the layered cathode, but the
+        # ECM only models the trigger temperature.
+        if self.temperature_c > self.chem.thermal_runaway_c:
             self.latched_error = ErrorCode.THERMAL_RUNAWAY
             return self._read_state(latched=True)
 

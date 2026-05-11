@@ -1,0 +1,24 @@
+schedule_id: demo_5cycle_nmc
+chemistry: NMC
+bench:
+  chassis: 1                 # smoke test runs on cycler_01 only (chamber A)
+  channels_per_chassis: 16
+chamber:
+  setpoint_c: 25.0
+  soak_seconds: 0
+# v0.1.8: chemistry suffix on every schedule name; this is the phone-grade
+# NMC variant (high-capacity flagship cathode, V_max=4.40 V). Cycler_01
+# normally boots LCO (chamber A default), but the orchestrator writes the
+# chassis CHEMISTRY register at kickoff and the cycler rebuilds its cells
+# to match this schedule — no .env override required.
+#
+# Shallow window (3.55 V → 3.95 V terminal at 1 C, ≈0.2 SOC swing) over 2
+# cycles. Picked so a wall-clock demo at SIM_TIME_FACTOR=50 wraps in ≈1
+# minute while still exercising every step type (cc / rest / cc / rest).
+steps:
+  - {name: cc_charge,     type: cc, rate_c: 1.0,  end_when: {voltage_v_above: 3.95, max_duration_s: 1500}}
+  - {name: rest_top,      type: rest, duration_s: 5}
+  - {name: cc_discharge,  type: cc, rate_c: -1.0, end_when: {voltage_v_below: 3.55, max_duration_s: 1500}}
+  - {name: rest_bottom,   type: rest, duration_s: 5}
+cycle:
+  repeat: 2

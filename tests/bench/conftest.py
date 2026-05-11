@@ -13,6 +13,7 @@ from pathlib import Path
 
 import asyncpg
 import pytest
+from batterylab.db import make_dsn
 from testcontainers.core.container import DockerContainer
 from testcontainers.core.wait_strategies import LogMessageWaitStrategy
 
@@ -50,7 +51,7 @@ def tsdb_container() -> Iterator[str]:
     try:
         host = c.get_container_host_ip()
         port = int(c.get_exposed_port(5432))
-        dsn = f"postgresql://lab:lab@{host}:{port}/telemetry"
+        dsn = make_dsn("lab", "lab", host, port, "telemetry")
 
         root = Path(__file__).resolve().parents[2]
         sql_files = sorted((root / "migrations" / "timescale").glob("*.sql"))
