@@ -21,7 +21,7 @@ budget framework.
 - Isolate PyBaMM cells to their own asyncio thread budget.
 - Add a `pybamm_compare` service that runs a shadow SPM with perturbed
   parameters — supports digital-twin parameter ID work.
-- Parameter sets: Chen2020 for NMC, Prada2013 for LFP.
+- Parameter sets: Chen2020 for NMC
 
 ## Doyle-Fuller-Newman cell physics
 
