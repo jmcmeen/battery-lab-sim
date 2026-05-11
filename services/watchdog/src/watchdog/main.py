@@ -31,6 +31,18 @@ from .alerts import AlertSink
 from .chamber_monitor import CHAMBER_TOPIC, ChamberStates, chamber_check_loop
 from .chassis_monitor import ChassisProbe, chassis_monitor_loop
 from .dedupe import EdgeTrigger
+from .fleet_monitor import (
+    DEFAULT_POLL_S as FLEET_DEFAULT_POLL_S,
+)
+from .fleet_monitor import (
+    DEFAULT_THRESHOLD as FLEET_DEFAULT_THRESHOLD,
+)
+from .fleet_monitor import (
+    DEFAULT_WINDOW_S as FLEET_DEFAULT_WINDOW_S,
+)
+from .fleet_monitor import (
+    fleet_monitor_loop,
+)
 from .heartbeat_monitor import HEARTBEAT_TOPIC, HeartbeatState, heartbeat_check_loop
 
 log = get("watchdog.main")
@@ -67,8 +79,12 @@ async def _dispatch_messages(
 async def _run_session(
     mqtt: aiomqtt.Client,
     sink: AlertSink,
+    pool: asyncpg.Pool,
     probes: list[ChassisProbe],
     edge: EdgeTrigger,
+    fleet_threshold: int,
+    fleet_window_s: float,
+    fleet_poll_s: float,
 ) -> None:
     """One MQTT-connected session. Returns / raises only on error or cancel.
 
@@ -91,6 +107,16 @@ async def _run_session(
             tg.create_task(heartbeat_check_loop(sink, hb_state, edge))
             tg.create_task(chamber_check_loop(sink, chambers, edge))
             tg.create_task(chassis_monitor_loop(sink, probes, edge))
+            tg.create_task(
+                fleet_monitor_loop(
+                    sink,
+                    pool,
+                    edge,
+                    threshold=fleet_threshold,
+                    window_s=fleet_window_s,
+                    poll_s=fleet_poll_s,
+                )
+            )
     except* aiomqtt.MqttError as eg:
         # Unwrap so the outer reconnect loop catches a flat MqttError.
         raise eg.exceptions[0] from None
@@ -113,12 +139,22 @@ async def _run() -> None:
     mqtt_host = os.environ.get("MQTT_HOST", "mosquitto")
     mqtt_port = int(os.environ.get("MQTT_PORT", "1883"))
     cycler_hosts = _parse_cycler_hosts(os.environ.get("CYCLER_HOSTS", "cycler_01:502"))
+    fleet_threshold = int(
+        os.environ.get("WATCHDOG_FLEET_FAIL_THRESHOLD", str(FLEET_DEFAULT_THRESHOLD))
+    )
+    fleet_window_s = float(
+        os.environ.get("WATCHDOG_FLEET_FAIL_WINDOW_S", str(FLEET_DEFAULT_WINDOW_S))
+    )
+    fleet_poll_s = float(os.environ.get("WATCHDOG_FLEET_FAIL_POLL_S", str(FLEET_DEFAULT_POLL_S)))
 
     log.info(
         "watchdog_starting",
         pg=f"{pg_user}@{pg_host}:{pg_port}/{pg_db}",
         mqtt=f"{mqtt_host}:{mqtt_port}",
         cyclers=cycler_hosts,
+        fleet_threshold=fleet_threshold,
+        fleet_window_s=fleet_window_s,
+        fleet_poll_s=fleet_poll_s,
     )
 
     probes = [
@@ -138,7 +174,16 @@ async def _run() -> None:
                 try:
                     async with aiomqtt.Client(mqtt_host, port=mqtt_port) as mqtt:
                         sink = AlertSink(pool, mqtt)
-                        await _run_session(mqtt, sink, probes, edge)
+                        await _run_session(
+                            mqtt,
+                            sink,
+                            pool,
+                            probes,
+                            edge,
+                            fleet_threshold,
+                            fleet_window_s,
+                            fleet_poll_s,
+                        )
                 except aiomqtt.MqttError as e:
                     log.warning("mqtt_error_reconnect", error=str(e))
                     await asyncio.sleep(RECONNECT_BACKOFF_S)
