@@ -93,7 +93,7 @@ the bench-wide companion to Live Bench's per-channel heatmaps.
 Test schedules live in [`schedules/`](../schedules/). Look at one:
 
 ```bash
-cat schedules/soak_25c.yaml
+cat schedules/soak_25c_lco.yaml
 ```
 
 The schedule defines the chemistry, chamber setpoint, and the sequence of
@@ -192,7 +192,7 @@ feature, not an afterthought.
 
 ## 8. The orchestrator/cycler boundary
 
-[`schedules/soak_25c.yaml`](../schedules/soak_25c.yaml) is the entire
+[`schedules/soak_25c_lco.yaml`](../schedules/soak_25c_lco.yaml) is the entire
 user-facing surface for someone running a long-duration test. They write
 YAML; they don't write retry loops, they don't write try/except, they don't
 manage process lifecycles.
