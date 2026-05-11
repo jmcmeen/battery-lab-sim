@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 import asyncpg
 from batterylab.chemistry import get_chemistry
 from batterylab.log import get
+from batterylab.modbus_maps import chemistry_id_for_name
 from batterylab.models import ErrorCode
 from batterylab.schedule import Schedule, end_condition_met, step_to_command
 from batterylab.time import SimTime
@@ -157,7 +158,7 @@ async def step_one_tick(
         return
 
     # Continue current step — re-issue the command (idempotent).
-    mode, setpoint = step_to_command(step, chem.capacity_ah_nominal)
+    mode, setpoint = step_to_command(step, chem.capacity_ah_nominal, chem.max_charge_c_rate)
     await cycler.send_command(exp.channel_idx, mode, setpoint)
     await cycler.kick_channel(exp.channel_idx)
 
@@ -193,7 +194,7 @@ async def _advance(pool: asyncpg.Pool, cycler: CyclerClient, exp: Experiment) ->
     await insert_step_row(pool, exp)
     chem = get_chemistry(exp.schedule.chemistry)
     next_step = exp.schedule.steps[exp.step_index]
-    mode, setpoint = step_to_command(next_step, chem.capacity_ah_nominal)
+    mode, setpoint = step_to_command(next_step, chem.capacity_ah_nominal, chem.max_charge_c_rate)
     if cycle_advanced:
         # Stamp the channel with the new cycle index BEFORE issuing the next
         # command, so the first telemetry row of the new cycle's first step
@@ -213,14 +214,42 @@ async def _advance(pool: asyncpg.Pool, cycler: CyclerClient, exp: Experiment) ->
 
 
 async def kickoff(pool: asyncpg.Pool, cycler: CyclerClient, exp: Experiment) -> None:
-    """Transition experiment from pending → running, send first command."""
+    """Transition experiment from pending → running, send first command.
+
+    Before issuing the first command, writes the chassis CHEMISTRY register
+    so the cycler's cells match ``schedule.chemistry``. The cycler rebuilds
+    its 32 ECMCell instances if the chemistry differs from what's currently
+    loaded (no-op if it already matches — preserves aging across
+    same-chemistry experiments). A read-back verifies the write took
+    effect; mismatch surfaces as a clear experiment-failed reason rather
+    than silently miscommanded C-rates.
+    """
     exp.status = "running"
     exp.step_started_sim_s = SimTime.now_sim()
     await mark_experiment_status(pool, exp.id, "running")
     await insert_step_row(pool, exp)
     chem = get_chemistry(exp.schedule.chemistry)
+
+    # Schedule-driven chemistry: write before the first command lands so
+    # the rebuild completes before the cell loop runs the new setpoint.
+    chem_id = chemistry_id_for_name(exp.schedule.chemistry)
+    await cycler.write_chassis_chemistry(chem_id)
+    rb = await cycler.read_chassis_chemistry()
+    if rb != chem_id:
+        log.error(
+            "chassis_chemistry_write_rejected",
+            experiment_id=exp.id,
+            chassis=exp.chassis_id,
+            wanted=chem_id,
+            got=rb,
+            schedule_chemistry=exp.schedule.chemistry,
+        )
+        exp.status = "failed"
+        await mark_experiment_status(pool, exp.id, "failed")
+        return
+
     first_step = exp.schedule.steps[exp.step_index]
-    mode, setpoint = step_to_command(first_step, chem.capacity_ah_nominal)
+    mode, setpoint = step_to_command(first_step, chem.capacity_ah_nominal, chem.max_charge_c_rate)
     await cycler.set_cycle_index(exp.channel_idx, exp.cycle_index)
     publish_context(
         chassis_id=exp.chassis_id,

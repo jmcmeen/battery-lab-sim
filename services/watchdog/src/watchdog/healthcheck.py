@@ -12,6 +12,7 @@ import os
 import sys
 
 import asyncpg
+from batterylab.db import make_dsn
 
 
 async def _check() -> int:
@@ -23,7 +24,7 @@ async def _check() -> int:
     pg_user = os.environ.get("PG_USER", "lab")
     pg_pw = os.environ.get("PG_PASSWORD", "lab")
     pg_db = os.environ.get("PG_DB", "lab")
-    dsn = f"postgresql://{pg_user}:{pg_pw}@{pg_host}:{pg_port}/{pg_db}"
+    dsn = make_dsn(pg_user, pg_pw, pg_host, pg_port, pg_db)
     try:
         conn = await asyncpg.connect(dsn, timeout=2.0)
     except (asyncpg.PostgresError, OSError) as e:

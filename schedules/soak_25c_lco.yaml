@@ -1,0 +1,25 @@
+schedule_id: soak_25c_lco
+chemistry: LCO
+bench:
+  chassis: 1-8               # Chamber A is 25 °C → cyclers 01-08 (default LCO)
+  channels_per_chassis: 32
+chamber:
+  setpoint_c: 25.0
+  soak_seconds: 1800
+# v0.1.8: LCO soak at 25 °C — the baseline phone-cell aging study.
+# Voltage cutoffs reflect LCO's 4.35 V top of charge (vs phone-grade
+# NMC's 4.40 V). Chamber A defaults to LCO in docker-compose so this
+# runs against the default bench with no env overrides.
+#
+# C-rates are intentionally asymmetric (0.5 C charge / 1.0 C discharge)
+# to mirror real phone-cell aging practice: slow charge extends cycle
+# life; faster discharge captures the usage-side knee.
+steps:
+  - {name: initial_rest,   type: rest, duration_s: 600}
+  - {name: cc_charge,      type: cc, rate_c: 0.5,  end_when: {voltage_v_above: 4.35, max_duration_s: 9000}}
+  - {name: cv_charge,      type: cv, voltage_v: 4.35, end_when: {current_a_below_c_rate: 0.05, max_duration_s: 7200}}
+  - {name: rest_top,       type: rest, duration_s: 600}
+  - {name: cc_discharge,   type: cc, rate_c: -1.0, end_when: {voltage_v_below: 3.00, max_duration_s: 5400}}
+  - {name: rest_bottom,    type: rest, duration_s: 600}
+cycle:
+  repeat: 1000

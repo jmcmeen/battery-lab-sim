@@ -6,7 +6,7 @@ This is the reference for the project's architectural invariants, conventions, a
 
 ## Project: Battery Lab Simulator
 
-A Dockerized digital twin of a battery R&D lab. Multi-channel cyclers, thermal chambers, and DAQs are simulated as containers running real industrial protocols (Modbus TCP, MQTT). The system generates billions of rows of realistic time-series telemetry across a hot/cold storage tier, and demonstrates hardware abstraction, version-controlled schedules, and unattended-reliability primitives like dead-man timers and idempotent resume.
+A Dockerized digital twin of a battery R&D lab. Multi-channel cyclers, thermal chambers, and DAQs are simulated as containers running real industrial protocols (Modbus TCP, MQTT). The current chemistry library covers NMC and LCO with optional silicon-carbon anode variants of both. The system generates billions of rows of realistic time-series telemetry across a hot/cold storage tier, and demonstrates hardware abstraction, version-controlled schedules, and unattended-reliability primitives like dead-man timers and idempotent resume.
 
 **The simulator is built to be broken on purpose.** Failure injection (kill the orchestrator, partition the network, fill the disk) is a first-class feature, not an afterthought.
 
@@ -65,6 +65,8 @@ These are the hills to die on. Every PR that breaks one should be rejected.
 
 10. **The watchdog only alerts; it never halts cells.** Per invariant #1, hardware-level safety belongs to the cycler. The watchdog service writes to the `alerts` table and publishes to `alerts/critical`; it has no actuator path back to the cycler. Tempted to "let the watchdog kick the chassis to keep cells alive"? Don't — that couples the safety actuator to a software-level monitor.
 
+11. **Chemistry is schedule-driven at runtime, not env-driven at boot.** The orchestrator writes the chassis `CHEMISTRY` Modbus register (`ChassisReg.CHEMISTRY` = 10010) from `schedule.chemistry` at every experiment kickoff, and the cycler rebuilds its 32 `ECMCell` instances to match. Aging state resets on a chemistry change (cell-swap semantics); same-chemistry writes are no-ops that preserve aging. The `CHEMISTRY` env in `docker-compose.yml` is a boot-time fallback only — never a runtime authority. If you're adding a feature that branches on chemistry, read it from `chem` on the live `ECMCell`, not from env.
+
 ---
 
 ## File Organization
@@ -104,72 +106,17 @@ When adding a new **test**:
 
 ---
 
+## Calibration scope
+
+**Chemistry parameters are illustrative, not vendor-fitted.** The NMC, LCO, and silicon-carbon anode variants in [libs/batterylab/src/batterylab/chemistry.py](libs/batterylab/src/batterylab/chemistry.py) are calibrated to literature ranges for the cathode / anode pairing — they sit in plausible regions for a phone-grade 3 Ah cell (OCV tables, R₀, capacity, aging coefficients, V_max, thermal-runaway threshold). They are **not** fitted to any specific Murata / ATL / LG / Samsung SDI cell datasheet, and the project makes no claim of bench parity with proprietary vendor data.
+
+If you need parity with a specific vendor part, treat fitting against vendor pulse-test data as a one-day exercise: replace the relevant entry's parameters, re-run [tests/unit/test_chemistry.py](tests/unit/test_chemistry.py) and the ECM aging tests, and add a calibration note next to the new entry citing the data source and test conditions. The schema (capacity / OCV table / RC / thermal / aging / safety envelope) is designed to accept fitted parameters without code changes.
+
+---
+
 ## Common Tasks
 
-### Add a new chemistry
-1. Add OCV table, R0/R1/C1 parameters, thermal coefficients, and aging constants to the `CHEMISTRIES` dict in `libs/batterylab/chemistry.py`.
-2. Add a unit test in `tests/unit/test_chemistry.py` asserting a 1C discharge from full takes ~3600 simulated seconds and CE > 99%.
-
-### Add a new schedule
-1. Create `schedules/<name>.yaml`.
-2. Required `bench:` block: `chassis` (single id, "1-16" range, YAML list, or "1,5,9") and `channels_per_chassis` (1..32). Match the chassis range to the schedule's chamber temp — cyclers 01–08 are in Chamber A (25 °C), 09–16 in Chamber B (45 °C). The bench layout is part of the experimental setup; a different layout is a different schedule, not a CLI flag.
-3. Run `make validate-schedules` — Pydantic checks the schema, including bench bounds against `MAX_CHASSIS` / `MAX_CHANNELS_PER_CHASSIS` in `libs/batterylab/src/batterylab/schedule.py`.
-4. Smoke test: `make demo SCHEDULE=schedules/<name>.yaml`.
-5. Commit. The schedule's git SHA will be recorded with every experiment that uses it.
-
-### Add a new chaos scenario
-1. Bash script in `chaos/<name>.sh`. Must `set -euo pipefail` and `source chaos/_lib.sh`. Use the helpers (`preflight_services_healthy`, `pg_query`, `tsdb_query`, `count_alerts_since_start`, `assert_eq`/`assert_ge`, `pass`/`fail`). Print `PASS` on success or `fail` on first violation.
-2. Container kills go through `$COMPOSE kill <service>`, never `docker kill <name>` — compose handles the project prefix.
-3. Wait windows are **wall time**, never sim time. Failure injection is real-time. Heartbeat threshold is 10s wall (watchdog/heartbeat_monitor.py); cycler chassis watchdog trips at 5s wall (cycler/safety.py). Use these as your floor; add ~2s buffer for psql roundtrip.
-4. Use `RUN_STARTED_AT` (set by `_lib.sh`) when querying `alerts` so prior runs don't bleed into assertions.
-5. Add a `Makefile` target `chaos.<name>` that runs the script.
-6. If the scenario can be automated reliably in CI, add a `tests/chaos/test_<name>.py` wrapper using the `chaos_stack` and `run_chaos_script` fixtures in `tests/chaos/conftest.py`. If it requires `tc netem` or `docker network disconnect`, leave it demo-only — those have flaky timing in CI.
-7. Document the scenario in `docs/chaos.md`.
-
-### Add a new Modbus register
-1. Edit `libs/batterylab/modbus_maps.py`.
-2. **Bump the protocol version register** (chassis register 10000). Old orchestrator code reading the new map must error cleanly, not silently misread.
-3. Update `tests/integration/test_modbus.py` with the new register.
-
-### Change the database schema
-1. Add a migration file in `migrations/timescale/` or `migrations/postgres/`, numbered sequentially.
-2. Update `docs/migrations.md` with a one-line summary.
-3. Test the migration against a fresh DB and an existing populated DB.
-
-### Add a new column to the telemetry table
-The hot-tier schema, the cold-tier Parquet schema, the ingester COPY column list, and the cycler MQTT payload schema must all stay in lock-step or DuckDB cross-tier reads silently corrupt. `tests/unit/test_schema_alignment.py` is the enforcement mechanism — the recipe explains the steps; the test catches you when you skip one.
-1. Add the column to `migrations/timescale/001_telemetry.sql` (or a new numbered migration if data already exists). If the SQL type is new (not already in `SQL_TO_PA` in `test_schema_alignment.py`), extend that mapping.
-2. Update `services/parquet_export/src/parquet_export/export.py` `TELEMETRY_SCHEMA` — match the column order exactly.
-3. Update `services/ingester/src/ingester/main.py` `COLUMNS` and `_parse`.
-4. Update `services/cycler/src/cycler/telemetry.py` to populate the new field.
-5. Run `uv run pytest -m unit tests/unit/test_schema_alignment.py` — failures here mean a source is out of step.
-6. Smoke-test: `make demo`, then `make duckdb` and `SELECT <new_col> FROM telemetry_all LIMIT 5;`.
-
-**Slow-changing context fields** (per-experiment metadata like `schedule_id`, `step_name`) take a different path — they're published by the orchestrator on the retained `experiment/<chassis>/<channel>` MQTT topic (Sparkplug-B / device-shadow pattern, invariant #7) and joined onto telemetry rows in the ingester. Don't add them to the cycler payload — the cycler is the wrong source of truth for orchestrator metadata, and putting per-experiment strings on a 10 Hz QoS-0 topic wastes bandwidth and couples the safety chassis to scheduling concerns it shouldn't know about. See `services/orchestrator/src/orchestrator/context.py` and the `experiment/+/+` subscription in `services/ingester/src/ingester/main.py`.
-
-### Add a new Grafana dashboard
-1. Drop a JSON file in `grafana/dashboards/<name>.json`. UID must match the filename (e.g. `live_bench.json` → uid `live-bench`); the unit test enforces this.
-2. Reference datasources by uid only — `tsdb-telemetry` (TimescaleDB, default) or `pg-metadata` (Postgres). Drift between dashboard datasource UIDs and `grafana/provisioning/datasources/datasources.yml` is silent in production but caught by `tests/unit/test_grafana_dashboards.py`.
-3. Filter inside per-panel SQL, not in Grafana variables — the postgres datasource doesn't push down all predicates (CLAUDE.md gotcha).
-4. For heatmaps with sparse channels, use a `generate_series` cross-join LEFT JOIN to render a complete grid even when fewer than 512 channels are active. See `live_bench.json` for the pattern.
-5. Smoke test: `make up`, wait 30 s for the provisioning sweep, then open `http://localhost:3000`. UI edits don't persist across the next sweep — export them back to JSON if you want to keep them.
-6. Update the expected-set assertion in `tests/unit/test_grafana_dashboards.py::test_dashboards_directory_has_expected_files` to include the new file stem. The test enforces an exact set so unintentional drift is caught — but it also catches the legitimate add, so `make test.unit` will fail until the new stem is listed.
-
-### Add a new cycle-derived feature
-The analytics service writes derived per-cycle data to `cycle_features` on every `events/cycle_complete` MQTT message. Adding a new feature is mostly schema + math + dashboard:
-1. Add the column to `migrations/postgres/003_cycle_features.sql` (or a new migration if cycle_features data already exists in production — `ALTER TABLE` rather than recreate).
-2. Implement the math as a pure function in `services/analytics/src/analytics/features.py`. Numpy in / scalar (or simple dict) out. Zero I/O.
-3. Wire it into `compute_features` in `services/analytics/src/analytics/pipeline.py` and add it to `CycleFeatures` dataclass + `upsert_features` SQL.
-4. Add a unit test in `tests/unit/test_analytics_features.py` — synthetic numpy arrays, no containers.
-5. Add a panel to `grafana/dashboards/cycle_kpis.json` reading from the new column.
-6. Make any thresholds env-tunable via `ANALYTICS_*` env vars surfaced in `services/analytics/src/analytics/main.py` and `.env.example`. Hardcoded thresholds are an anti-pattern in this service.
-
-### Add a new alert source
-1. Pick a `source` string and a stable `message` slug (e.g. `chassis_unreachable`). The message slug is the dedupe key — same condition → same slug.
-2. Build the `Alert(severity=..., source=..., message=..., chassis_id=..., channel_idx=...)` from `services/watchdog/src/watchdog/alerts.py`.
-3. Use an `EdgeTrigger` (services/watchdog/src/watchdog/dedupe.py) keyed by `(message, chassis_id, channel_idx)` to suppress repeats while the condition persists.
-4. Call `await sink.emit(alert)` from your monitor coroutine. The sink writes to Postgres `alerts` and publishes to `alerts/critical` on critical severity (best-effort; never raises).
-5. Per invariant #10, never wire an actuator path from the alert source back to the cycler.
+> Contributor recipes ("add a new chemistry", "add a new schedule", "add a new chaos scenario", etc.) live in [CONTRIBUTING.md#recipes](CONTRIBUTING.md#recipes) so they're discoverable to public contributors. This file keeps the architectural invariants, anti-patterns, and gotchas that govern the recipes.
 
 ---
 
@@ -191,7 +138,7 @@ The analytics service writes derived per-cycle data to `cycle_features` on every
 ## Gotchas
 
 - **TimescaleDB compression is one-way.** Compressed chunks are effectively read-only. To modify a compressed chunk you must decompress, update, recompress. Schemas should be designed so compressed data is immutable.
-- **Modbus float32 takes two registers.** Always read/write as a pair. Endianness is big-endian word order in this project.
+- **Modbus float32 takes two registers.** Always read/write as a pair. Endianness is big-endian word order in this project. If you refactor the struct format strings (`>f`, `>HH`) in `libs/batterylab/src/batterylab/modbus_maps.py` (lines 107–115), re-run `tests/unit/test_modbus_properties.py::test_f32_round_trip_is_exact` — the Hypothesis property test exhausts every finite float32 and will catch a silent endianness flip. Without that pin, half the Modbus registers would silently misread.
 - **MQTT QoS 0 messages can be lost during broker reconnect.** Don't use QoS 0 for state changes — only for telemetry where loss is tolerable.
 - **DuckDB's postgres extension scans, it doesn't push down all predicates.** Filter in subqueries, don't rely on the optimizer.
 - **`docker kill` takes ~1 wall-second to propagate.** At high `SIM_TIME_FACTOR`, the cycler watchdog may trip before docker even returns from the kill command. This is correct simulation behavior — don't "fix" it.

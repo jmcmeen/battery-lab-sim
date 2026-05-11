@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/jmcmeen/battery-lab-sim/actions/workflows/ci.yml/badge.svg)](https://github.com/jmcmeen/battery-lab-sim/actions/workflows/ci.yml)
 
-Dockerized digital twin of a battery R&D lab. **16 simulated cyclers × 32 channels = 512 cells** cycling continuously across two thermal chambers, generating billions of rows of realistic time-series telemetry through a hot tier (TimescaleDB) and a cold tier (Parquet on MinIO), queryable cross-tier from one DuckDB session.
+Dockerized digital twin of a battery R&D lab. **16 simulated cyclers × 32 channels = 512 cells** cycling continuously across two thermal chambers (chamber A: LCO at 25 °C, chamber B: NMC at 45 °C; silicon-carbon anode variants of both), generating billions of rows of realistic time-series telemetry through a hot tier (TimescaleDB) and a cold tier (Parquet on MinIO), queryable cross-tier from one DuckDB session.
 
 **Built to be broken on purpose.** Failure injection — kill the orchestrator, partition the network, fill the disk — is a first-class feature, and the system survives it: a separate watchdog service writes durable alerts on observable failures while hardware-level safety in each cycler container halts cells autonomously when the orchestrator goes silent.
 
@@ -21,7 +21,7 @@ make demo                       # 16-channel × 5-cycle smoke test on cycler_01
                                 # Grafana is provisioned by `make up` → http://localhost:3000 (anonymous Viewer)
 make duckdb                     # cross-tier query shell (hot + cold)
 make duckdb.query Q="SELECT count(*) FROM telemetry_all"
-make soak.start                 # start a soak (defaults from .env, override SCHEDULE/CHASSIS/CHANNELS)
+make soak.start                 # start a soak (default schedule: soak_25c_lco; override via SCHEDULE=, e.g. SCHEDULE=phone_fastcharge_nmc)
 make soak.status                # per-experiment cycles_done summary
 make soak.stop                  # mark all running soak experiments completed
 make smoke                      # one-shot health check: services + telemetry + experiments + cycle_features + cross-tier rows
@@ -148,7 +148,7 @@ The orchestrator can be killed mid-experiment and resumed without duplicate cycl
 A laptop with 50 GB free disk hosts the full 60-hour soak comfortably.
 
 ### Schedules are code
-YAML test schedules live in [schedules/](schedules/), are validated via Pydantic at run time, and every row in `experiments` records the schedule's git SHA — full reproducibility from row to commit. The shipped soak schedules cover a baseline (25 °C), elevated-T accelerated aging (45 °C), and a high-C-rate fast-demo profile.
+YAML test schedules live in [schedules/](schedules/), are validated via Pydantic at run time, and every row in `experiments` records the schedule's git SHA — full reproducibility from row to commit. **12 shipped schedules** with a chemistry suffix on every filename (`_lco`, `_nmc`): baseline soak / cycle-life / demo in both chemistries (chamber A LCO, chamber B NMC); elevated-T accelerated NMC aging at 45 °C; plus four phone-realistic patterns — multi-stage step-charge `phone_fastcharge_{lco,nmc}` (the actual 2C → 1.5C → 1C profile every flagship phone uses, not flat CC-CV) and 168-hour calendar-aging `phone_calendar_45c_{lco,nmc}` (the silent killer in phones left plugged in overnight). Si-C anode variants (`NMC+SiC`, `LCO+SiC`) are first-class chemistries with chemistry-bounded charge-rate caps applied by the orchestrator.
 
 ### Streaming cycle analytics
 [services/analytics/](services/analytics/) subscribes to the orchestrator's `events/cycle_complete` MQTT topic. On each event it queries TSDB for the cycle's telemetry, computes capacity (Coulomb counting), Coulombic efficiency, peak temperature, internal resistance R₀ (from the CC→CV current step), and Severson-style dQ/dV peaks. One row per `(experiment_id, cycle_index)` lands in the `cycle_features` Postgres table — small, dashboard-ready. When R₀ jumps cycle-over-cycle by more than the configurable `ANALYTICS_R0_JUMP_THRESHOLD_PCT`, the service writes a `warning`-severity alert with `source='analytics.anomaly'` so the Reliability dashboard's dedicated R₀-jump panel surfaces the cell.

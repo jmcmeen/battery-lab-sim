@@ -31,6 +31,7 @@ from datetime import UTC, datetime
 
 import aiomqtt
 import asyncpg
+from batterylab.db import make_dsn
 from batterylab.log import configure as configure_log
 from batterylab.log import get
 
@@ -156,7 +157,7 @@ async def main() -> None:
         batch_max_age_s=BATCH_MAX_AGE_S,
     )
 
-    dsn = f"postgresql://{tsdb_user}:{tsdb_pw}@{tsdb_host}:{tsdb_port}/{tsdb_db}"
+    dsn = make_dsn(tsdb_user, tsdb_pw, tsdb_host, tsdb_port, tsdb_db)
     # Persists across reconnects: retained context messages are re-delivered
     # by the broker on resubscribe, but holding the dict in module scope
     # avoids a "first telemetry batch lacks context" gap between MQTT
@@ -165,7 +166,12 @@ async def main() -> None:
 
     while True:
         try:
-            async with asyncpg.create_pool(dsn, min_size=1, max_size=4) as pool:
+            # Single consumer (the flush task). Pool is a connection holder,
+            # not a fan-out. If a second consumer appears (e.g. ingest-time
+            # analytics queries from the same process), raise max_size and
+            # document why — see orchestrator main.py for the right comment
+            # shape.
+            async with asyncpg.create_pool(dsn, min_size=1, max_size=1) as pool:
                 async with aiomqtt.Client(mqtt_host, port=mqtt_port) as client:
                     # Subscribe to context first so retained messages flow in
                     # before the first telemetry batch lands.

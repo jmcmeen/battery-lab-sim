@@ -25,12 +25,26 @@ log = get("cycler.safety")
 # Loop frequency in *simulated* seconds. 100 Hz sim = 10 Hz wall at SIM_TIME_FACTOR=10.
 SAFETY_PERIOD_SIM_S = 0.01
 
-# Per-channel watchdog window. Build guide §2.4 acceptance: trip within 5.5 s.
-WATCHDOG_THRESHOLD_S = 5.0
+# Per-channel watchdog window. Build guide §2.4 acceptance: trip within 5.5 s
+# at the default 5.0 s threshold. Production deployments keep this at 5.0; the
+# integration test suite drops it to 0.5 via env to shorten the otherwise-
+# load-bearing wall-time wait.
+DEFAULT_WATCHDOG_THRESHOLD_S = 5.0
 
 
-async def safety_loop(channel: Channel) -> None:
-    """One coroutine per channel. Halts the channel on any limit breach."""
+async def safety_loop(
+    channel: Channel,
+    *,
+    threshold_s: float = DEFAULT_WATCHDOG_THRESHOLD_S,
+) -> None:
+    """One coroutine per channel. Halts the channel on any limit breach.
+
+    ``threshold_s`` is the per-channel watchdog deadline in WALL seconds.
+    Defaults match the build-guide §2.4 acceptance (5.0 s, trip within
+    5.5 s). Tests can shorten it via the
+    ``CYCLER_CHANNEL_WATCHDOG_THRESHOLD_S`` env var read in
+    ``cycler.main`` — preserves the mechanism while cutting test wall time.
+    """
     while True:
         state = channel.read_state()
 
@@ -56,7 +70,7 @@ async def safety_loop(channel: Channel) -> None:
                     t_dc=t_dc,
                     limit_dc=channel.safety_t_max_dc,
                 )
-            elif channel.watchdog_expired(WATCHDOG_THRESHOLD_S):
+            elif channel.watchdog_expired(threshold_s):
                 channel.halt(ErrorCode.WATCHDOG_TIMEOUT)
                 log.warning("halt", channel=channel.idx, reason="WATCHDOG_TIMEOUT")
             elif state.latched_error != ErrorCode.NONE:
@@ -70,7 +84,7 @@ async def safety_loop(channel: Channel) -> None:
 async def chassis_watchdog(
     channels: Iterable[Channel],
     is_kicked: ChassisKickState,
-    threshold_s: float = 5.0,
+    threshold_s: float = DEFAULT_WATCHDOG_THRESHOLD_S,
 ) -> None:
     """One per chassis. Halts every active channel if the chassis kick stops.
 

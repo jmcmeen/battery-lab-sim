@@ -45,9 +45,12 @@ async def test_chassis_watchdog_halts_all_active_channels(cycler_running) -> Non
         for idx in active:
             assert channels[idx].mode == "cc", f"ch{idx} mode={channels[idx].mode}"
 
-        # Stop kicking. Wait long enough for chassis watchdog (5 wall-s) AND
-        # per-channel watchdog (5 wall-s) to trip — give a bit of margin.
-        await asyncio.sleep(5.5)
+        # Stop kicking. The integration fixture drops the chassis + per-
+        # channel watchdog threshold from the production 5.0 s to 0.5 s
+        # (see CYCLER_TEST_WATCHDOG_THRESHOLD_S in conftest), so 0.7 s
+        # gives a comfortable margin past both. Production behavior at
+        # 5.0 s is covered by `make test.chaos` against a live stack.
+        await asyncio.sleep(0.7)
 
         # Every active channel must be latched. Idle channels untouched.
         for idx in active:

@@ -14,7 +14,10 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .errors import ScheduleError
+from .log import get
 from .models import ChannelMode
+
+log = get("batterylab.schedule")
 
 # Bench dimensions mirror the static deployment in docker-compose.yml: 16 cycler
 # services (cycler_01..cycler_16), each with CHANNELS_PER_CYCLER=32. They live
@@ -226,16 +229,41 @@ def _git_sha_of(path: Path) -> str:
 # ----- helpers used by the orchestrator executor ------------------------
 
 
-def step_to_command(step: Step, capacity_ah_nominal: float) -> tuple[ChannelMode, float]:
+def step_to_command(
+    step: Step,
+    capacity_ah_nominal: float,
+    max_charge_c_rate: float | None = None,
+) -> tuple[ChannelMode, float]:
     """Translate a schedule step to a (mode, setpoint) command.
 
     For CC: setpoint = -rate_c × capacity (positive current = discharge in cell convention,
     schedule convention is rate_c>0 charge / rate_c<0 discharge).
+
+    If ``max_charge_c_rate`` is provided and the step's charge rate
+    exceeds it, the rate is clipped to the chemistry's ceiling. Used for
+    silicon-carbon anode cells (v0.1.8) where manufacturers cap charge
+    rate to bound mechanical fatigue from anode swelling. Discharge
+    rates are not clipped — the cap is a charge-side anode-mechanics
+    concern, not a cell-energy one. Callers that want the clip should
+    pass ``chem.max_charge_c_rate`` from the chemistry params.
     """
     if isinstance(step, RestStep):
         return ("rest", 0.0)
     if isinstance(step, CCStep):
-        return ("cc", -step.rate_c * capacity_ah_nominal)
+        rate_c = step.rate_c
+        if max_charge_c_rate is not None and rate_c > max_charge_c_rate:
+            # Emit a structured warning so an operator who sees a Si-C cell
+            # charging slower than their schedule asked for can grep for
+            # this event and connect cause to effect. Without it the clip
+            # is invisible — the cycler just sees a lower current setpoint.
+            log.warning(
+                "schedule_charge_rate_clipped",
+                step_name=step.name,
+                requested_rate_c=rate_c,
+                applied_rate_c=max_charge_c_rate,
+            )
+            rate_c = max_charge_c_rate
+        return ("cc", -rate_c * capacity_ah_nominal)
     if isinstance(step, CVStep):
         return ("cv", float(step.voltage_v))
     raise ScheduleError(f"unknown step: {step!r}")

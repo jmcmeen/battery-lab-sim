@@ -51,7 +51,7 @@ Per-experiment cycle-level analysis. Template variables: `chassis_id` (1..16), `
 
 **File:** [grafana/dashboards/reliability.json](../grafana/dashboards/reliability.json) · **uid** `reliability` · **refresh** 5 s · **time** `now-24h to now`
 
-The watchdog story made visible. This is the dashboard you should be watching when running the v0.7 chaos demo (`docker kill orchestrator` → critical alert appears within ~10 s).
+The watchdog story made visible. This is the dashboard you should be watching when running the chaos demo (`docker kill orchestrator` → critical alert appears within ~10 s).
 
 | Panel | What it answers | Driven by |
 |---|---|---|

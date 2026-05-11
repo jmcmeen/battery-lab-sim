@@ -22,10 +22,17 @@ document.
 ## 1. The bench at a glance
 
 The system simulates a 16-cycler × 32-channel battery R&D bench — 512 cells
-total, split across two thermal chambers (A: 25 °C, B: 45 °C). Each cycler is
-its own Docker container exposing a Modbus TCP server on port 502 (mapped to
-host ports 5021–5036). Each channel inside a cycler is an asyncio task running
-an ECM cell model.
+total, split across two thermal chambers (A: 25 °C, B: 45 °C). The current
+chemistry library runs LCO in chamber A at room temperature and high-nickel
+NMC in chamber B at the 45 °C stress temperature that accelerates SEI growth
+in the analytics service's R₀-jump signature. Silicon-carbon anode variants
+(`NMC+SiC`, `LCO+SiC`) are first-class chemistries on top of either cathode.
+Chemistry is schedule-driven at runtime: the orchestrator writes the chassis
+CHEMISTRY Modbus register at every kickoff from `schedule.chemistry`, and
+the cycler rebuilds its 32 ECMCell instances to match. Each cycler is its
+own Docker container exposing a Modbus TCP server on port 502 (mapped to
+host ports 5021–5036). Each channel inside a cycler is an asyncio task
+running an ECM cell model.
 
 Look at `.env.example` and `docker-compose.yml` to see the topology:
 
@@ -71,7 +78,7 @@ Open Grafana at <http://localhost:3000> and find the **Live Bench** dashboard
 
 You're looking at the V / I / T / SOC heatmaps for all 512 channels, sourced
 directly from TimescaleDB. Each cell is a real ECM with calibrated chemistry
-parameters (NMC and LFP — see
+parameters (LCO and NMC plus silicon-carbon anode variants — see
 [`libs/batterylab/src/batterylab/chemistry.py`](../libs/batterylab/src/batterylab/chemistry.py))
 being driven by a YAML schedule.
 
@@ -88,7 +95,7 @@ the bench-wide companion to Live Bench's per-channel heatmaps.
 Test schedules live in [`schedules/`](../schedules/). Look at one:
 
 ```bash
-cat schedules/soak_25c.yaml
+cat schedules/soak_25c_lco.yaml
 ```
 
 The schedule defines the chemistry, chamber setpoint, and the sequence of
@@ -156,7 +163,7 @@ Severson-style dQ/dV peaks. One row per `(experiment_id, cycle_index)` lands
 in the `cycle_features` Postgres table.
 
 If you've been soaking the 45 °C schedule, the dQ/dV peaks panel shows peak
-voltages shifting as the cell ages — this is the LFP knee migration / NMC
+voltages shifting as the cell ages — this is the NMC peak shift / LCO
 peak intensity loss signature from Severson et al., *Nature Energy* 2019. The
 R₀ trace climbs cycle-over-cycle as resistance grows.
 
@@ -187,7 +194,7 @@ feature, not an afterthought.
 
 ## 8. The orchestrator/cycler boundary
 
-[`schedules/soak_25c.yaml`](../schedules/soak_25c.yaml) is the entire
+[`schedules/soak_25c_lco.yaml`](../schedules/soak_25c_lco.yaml) is the entire
 user-facing surface for someone running a long-duration test. They write
 YAML; they don't write retry loops, they don't write try/except, they don't
 manage process lifecycles.
@@ -213,9 +220,9 @@ deliberately does not include:
 
 - Liquid electrolyte transport, SEI chemistry at the molecular level, or
   dendrite growth modeling.
-- High-fidelity PyBaMM cell physics. Prototyped and pulled — variable solver
-  cost was incompatible with the cycler's wall-clock watchdog without a
-  per-cell solver budget framework. See [`docs/future_work.md`](future_work.md).
+- Variable-cost cell physics (electrochemical / SPM / DFN). Excluded because
+  solver-time variance breaks the wall-clock cycler watchdog without a
+  per-cell solver budget framework — see [`docs/future_work.md`](future_work.md).
 - A SCPI/PyVISA DAQ service.
 - Apache Iceberg table format with schema evolution.
 - BMS-style cell balancing across simulated modules.

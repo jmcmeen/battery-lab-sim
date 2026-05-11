@@ -5,12 +5,12 @@
 #     make soak.start
 #
 # Pick a different schedule (any of these forms work):
-#     SCHEDULE=soak_45c make soak.start
-#     SCHEDULE=soak_45c.yaml make soak.start
-#     SCHEDULE=schedules/soak_45c.yaml make soak.start
+#     SCHEDULE=soak_45c_nmc make soak.start
+#     SCHEDULE=phone_fastcharge_lco make soak.start
+#     SCHEDULE=schedules/phone_calendar_45c_nmc.yaml make soak.start
 #
 # Chassis range and channels-per-chassis are read from the schedule's `bench:`
-# block (see schedules/soak_25c.yaml). To run a different bench layout, copy
+# block (see schedules/soak_25c_lco.yaml). To run a different bench layout, copy
 # the schedule and edit its bench: — that way `experiments.schedule_git_sha`
 # stays an honest record of which channels ran which protocol.
 #
@@ -26,7 +26,7 @@ COMPOSE="docker compose"
 PG_USER="${POSTGRES_USER:-lab}"
 PG_DB="${POSTGRES_DB:-lab}"
 
-resolve_schedule "${SCHEDULE:-soak_25c}" soak
+resolve_schedule "${SCHEDULE:-soak_25c_lco}" soak
 
 # Read chassis list and channel count from the schedule's bench: block.
 # schedule_bench.py validates against MAX_CHASSIS / MAX_CHANNELS_PER_CHASSIS,

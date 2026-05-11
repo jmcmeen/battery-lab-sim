@@ -7,4 +7,8 @@ orchestrator.
 
 # Liveness heartbeat path — written by alive_writer in main.py, stat()ed by
 # the healthcheck. Single source of truth so the two readers can't drift.
-ALIVE_PATH = "/tmp/cycler.alive"  # noqa: S108 - container-local tmpfs heartbeat
+# tmpfs heartbeat: container-local, not shared, race-free at the granularity
+# of the healthcheck poll period (5 s writer, 10 s probe). The S108 noqa is
+# because /tmp is shared in a host context but isolated per-container under
+# Docker's mount namespacing — there's no cross-tenant exposure.
+ALIVE_PATH = "/tmp/cycler.alive"  # noqa: S108

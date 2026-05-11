@@ -1,0 +1,19 @@
+schedule_id: demo_5cycle_lco
+chemistry: LCO
+bench:
+  chassis: 1                 # smoke test runs on cycler_01 only (chamber A, default LCO)
+  channels_per_chassis: 16
+chamber:
+  setpoint_c: 25.0
+  soak_seconds: 0
+# v0.1.8: LCO variant of the demo. Chamber A's default chemistry in
+# docker-compose is LCO, so this runs against the default bench with no
+# env overrides. The shallow window (3.70 V → 4.05 V at 1 C, ≈0.2 SOC
+# swing) gives ≈1 minute wall-clock wrap at SIM_TIME_FACTOR=50.
+steps:
+  - {name: cc_charge,     type: cc, rate_c: 1.0,  end_when: {voltage_v_above: 4.05, max_duration_s: 1500}}
+  - {name: rest_top,      type: rest, duration_s: 5}
+  - {name: cc_discharge,  type: cc, rate_c: -1.0, end_when: {voltage_v_below: 3.70, max_duration_s: 1500}}
+  - {name: rest_bottom,   type: rest, duration_s: 5}
+cycle:
+  repeat: 2

@@ -13,7 +13,7 @@ from __future__ import annotations
 import struct
 from enum import IntEnum
 
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3  # v0.1.8: chassis CHEMISTRY register added; bumped from 2.
 FIRMWARE_VERSION = 1
 CHANNEL_BLOCK_SIZE = 50
 CHASSIS_BASE = 10000
@@ -50,6 +50,62 @@ class ChassisReg(IntEnum):
     CHASSIS_WATCHDOG_STATUS = 10003  # 0=ok, 1=tripped
     CHASSIS_WATCHDOG_KICK = 10004  # write any value
     PROTOCOL_VERSION = 10005
+    # v0.1.8: chassis chemistry register. Read returns current cells'
+    # chemistry id (Chemistry enum); write triggers a channel rebuild
+    # under an asyncio lock if the value differs from current. Aging
+    # state is discarded on chemistry change (a chemistry change models
+    # a physical cell swap). See ChemistryId enum below for the encoding.
+    CHEMISTRY = 10010
+
+
+class ChemistryId(IntEnum):
+    """Chassis-level chemistry enum carried on ChassisReg.CHEMISTRY.
+
+    The integer values are the on-wire encoding — never renumber an
+    existing entry. Add new chemistries at the next free id and bump
+    PROTOCOL_VERSION so old orchestrator code reading the new map errors
+    cleanly instead of silently misreading.
+    """
+
+    NMC = 1
+    LCO = 2
+    NMC_SIC = 3
+    LCO_SIC = 4
+
+
+# Wire ChemistryId values ↔ chemistry.py CHEMISTRIES dict keys.
+CHEMISTRY_ID_TO_NAME: dict[ChemistryId, str] = {
+    ChemistryId.NMC: "NMC",
+    ChemistryId.LCO: "LCO",
+    ChemistryId.NMC_SIC: "NMC+SiC",
+    ChemistryId.LCO_SIC: "LCO+SiC",
+}
+CHEMISTRY_NAME_TO_ID: dict[str, ChemistryId] = {v: k for k, v in CHEMISTRY_ID_TO_NAME.items()}
+
+
+def chemistry_name_for_id(value: int) -> str:
+    """Resolve an on-wire chemistry id to the chemistry.py name. Raises
+    ``ValueError`` on unknown ids — typoed values on the bus must fail
+    visibly rather than land as silent bad physics."""
+    try:
+        return CHEMISTRY_ID_TO_NAME[ChemistryId(value)]
+    except (KeyError, ValueError) as e:
+        raise ValueError(
+            f"unknown chemistry id: {value} (have {[int(c) for c in ChemistryId]})"
+        ) from e
+
+
+def chemistry_id_for_name(name: str) -> int:
+    """Resolve a chemistry name (from `schedule.chemistry`) to its on-wire id.
+
+    Raises ``ValueError`` for unknown names so the orchestrator surfaces
+    schedule typos at kickoff rather than as a silent miswrite."""
+    try:
+        return int(CHEMISTRY_NAME_TO_ID[name])
+    except KeyError as e:
+        raise ValueError(
+            f"unknown chemistry name: {name!r} (have {list(CHEMISTRY_NAME_TO_ID)})"
+        ) from e
 
 
 class ModbusMode(IntEnum):

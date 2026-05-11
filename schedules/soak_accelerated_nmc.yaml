@@ -1,0 +1,27 @@
+schedule_id: soak_accelerated_nmc
+chemistry: NMC
+bench:
+  chassis: 9-16              # 45 °C accelerated → Chamber B (default NMC)
+  channels_per_chassis: 32
+chamber:
+  setpoint_c: 45.0
+  soak_seconds: 600
+# v0.1.8: high-rate NMC cycling at elevated temperature (45 °C).
+# Purpose-built to age cells fast for short demos — 2 C charge / 3 C
+# discharge condenses what would normally take ~500 cycles at moderate
+# rates into ~50 cycles. Use for a 1-hour bench-readiness run when you
+# need visible degradation but can't soak for days.
+#
+# Skipped on purpose: no LCO variant. 3 C discharge of LCO at 45 °C
+# risks an early thermal-runaway latch in the ECM model (LCO's threshold
+# is 150 °C but a 3 C high-T trajectory could approach it under aged
+# cells). The cathode is the wrong choice for an accelerated test.
+steps:
+  - {name: initial_rest,   type: rest, duration_s: 60}
+  - {name: cc_charge,      type: cc, rate_c: 2.0,  end_when: {voltage_v_above: 4.40, max_duration_s: 2400}}
+  - {name: cv_charge,      type: cv, voltage_v: 4.40, end_when: {current_a_below_c_rate: 0.10, max_duration_s: 1800}}
+  - {name: rest_top,       type: rest, duration_s: 60}
+  - {name: cc_discharge,   type: cc, rate_c: -3.0, end_when: {voltage_v_below: 3.00, max_duration_s: 1800}}
+  - {name: rest_bottom,    type: rest, duration_s: 60}
+cycle:
+  repeat: 100

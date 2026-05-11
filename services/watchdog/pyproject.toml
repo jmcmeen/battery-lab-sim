@@ -1,6 +1,6 @@
 [project]
 name = "watchdog"
-version = "0.1.7"
+version = "0.1.8"
 description = "Reliability monitor — orchestrator heartbeat, chassis dead-man, chamber drift → alerts table + MQTT."
 requires-python = ">=3.11"
 dependencies = [

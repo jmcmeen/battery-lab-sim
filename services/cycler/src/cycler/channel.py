@@ -25,6 +25,11 @@ class Channel:
 
     mode: ChannelMode = "idle"
     setpoint: float = 0.0
+    # Production callers (cycler.main._make_channels) pass safety_v_max_mv
+    # explicitly from cell.chem.v_max_mv so the boot envelope is chemistry-
+    # correct (NMC=4400 mV, LCO=4350 mV). The 4500 default is a generous
+    # sentinel for direct-construction tests that don't care about the
+    # safety envelope. Orchestrator can override at runtime via Modbus.
     safety_v_max_mv: int = 4500
     safety_t_max_dc: int = 600  # 60.0 °C
 

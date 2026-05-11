@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import structlog
 from batterylab.errors import ScheduleError
 from batterylab.schedule import (
     CCStep,
@@ -21,10 +22,10 @@ from pydantic import ValidationError
 
 @pytest.mark.unit
 def test_demo_schedule_loads(tmp_path: Path) -> None:
-    schedule_path = Path(__file__).parents[2] / "schedules" / "demo_5cycle.yaml"
+    schedule_path = Path(__file__).parents[2] / "schedules" / "demo_5cycle_lco.yaml"
     sched, sha = load_schedule(schedule_path)
-    assert sched.schedule_id == "demo_5cycle"
-    assert sched.chemistry == "NMC"
+    assert sched.schedule_id == "demo_5cycle_lco"
+    assert sched.chemistry == "LCO"
     assert sched.cycle.repeat == 2
     assert len(sched.steps) == 4
     assert isinstance(sched.steps[0], CCStep)
@@ -56,6 +57,80 @@ def test_step_to_command_rest_and_cv() -> None:
     assert step_to_command(rest, 3.0) == ("rest", 0.0)
     cv = CVStep(name="v", voltage_v=4.2, end_when=EndCondition(max_duration_s=60))
     assert step_to_command(cv, 3.0) == ("cv", 4.2)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("rate_c", "max_charge_c_rate", "expected_effective_rate"),
+    [
+        # Clipped: requested > cap → setpoint computed from cap.
+        (2.0, 1.5, 1.5),
+        # Boundary: requested == cap → not clipped (guards against >= vs > regression).
+        (1.5, 1.5, 1.5),
+        # Below cap: not clipped.
+        (1.0, 1.5, 1.0),
+    ],
+    ids=["above-cap-clipped", "equal-to-cap-not-clipped", "below-cap-not-clipped"],
+)
+def test_step_to_command_charge_rate_clip_for_si_c_chemistry(
+    rate_c: float, max_charge_c_rate: float, expected_effective_rate: float
+) -> None:
+    """The orchestrator passes ``chem.max_charge_c_rate`` from chemistry
+    params to bound mechanical fatigue from anode swelling on Si-C cells.
+    Pin all three relations against the cap so a future ``>=`` vs ``>``
+    regression in the clip logic surfaces here."""
+    step = CCStep(name="fast", rate_c=rate_c, end_when=EndCondition(voltage_v_above=4.35))
+    mode, sp = step_to_command(
+        step, capacity_ah_nominal=3.45, max_charge_c_rate=max_charge_c_rate
+    )
+    assert mode == "cc"
+    assert sp == pytest.approx(-expected_effective_rate * 3.45)
+
+
+@pytest.mark.unit
+def test_step_to_command_clip_emits_structured_warning() -> None:
+    """When the clip fires, an operator who sees a Si-C cell charging
+    slower than their schedule asked for needs a structured log entry to
+    diagnose cause. Assert one fires with the requested + applied rates
+    bound on the record so they're greppable in production JSON logs."""
+    step = CCStep(name="fast_2c", rate_c=2.0, end_when=EndCondition(voltage_v_above=4.35))
+    with structlog.testing.capture_logs() as captured:
+        step_to_command(step, capacity_ah_nominal=3.45, max_charge_c_rate=1.5)
+    events = [e for e in captured if e.get("event") == "schedule_charge_rate_clipped"]
+    assert len(events) == 1
+    assert events[0]["log_level"] == "warning"
+    assert events[0]["step_name"] == "fast_2c"
+    assert events[0]["requested_rate_c"] == 2.0
+    assert events[0]["applied_rate_c"] == 1.5
+
+
+@pytest.mark.unit
+def test_step_to_command_no_warning_when_not_clipped() -> None:
+    """Rate below the cap must NOT emit the clip warning — would spam
+    operator logs on every legitimate schedule tick otherwise."""
+    step = CCStep(name="ok_1c", rate_c=1.0, end_when=EndCondition(voltage_v_above=4.35))
+    with structlog.testing.capture_logs() as captured:
+        step_to_command(step, capacity_ah_nominal=3.45, max_charge_c_rate=1.5)
+    events = [e for e in captured if e.get("event") == "schedule_charge_rate_clipped"]
+    assert events == []
+
+
+@pytest.mark.unit
+def test_step_to_command_discharge_not_clipped() -> None:
+    """Discharge rates aren't clipped — the cap is a charge-side
+    anode-mechanics concern, not a cell-energy one."""
+    step = CCStep(name="fast_dis", rate_c=-3.0, end_when=EndCondition(voltage_v_below=3.0))
+    mode, sp = step_to_command(step, capacity_ah_nominal=3.0, max_charge_c_rate=1.5)
+    assert mode == "cc"
+    assert sp == pytest.approx(9.0)  # -(-3.0) * 3.0 — unclipped
+
+
+@pytest.mark.unit
+def test_step_to_command_no_clip_when_unset() -> None:
+    """When max_charge_c_rate is None (backward-compat callers), no clip."""
+    step = CCStep(name="fast", rate_c=5.0, end_when=EndCondition(voltage_v_above=4.35))
+    _, sp = step_to_command(step, capacity_ah_nominal=3.0)
+    assert sp == pytest.approx(-15.0)
 
 
 @pytest.mark.unit

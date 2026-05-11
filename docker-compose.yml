@@ -228,6 +228,7 @@ services:
       CHANNELS_PER_CYCLER: ${CHANNELS_PER_CYCLER:-32}
       MODBUS_PORT: "502"
       CHAMBER_ID: "A"
+      CHEMISTRY: ${CYCLER_01_CHEMISTRY:-LCO}
     ports: ["5021:502"]
     depends_on:
       mosquitto: {condition: service_healthy}
@@ -241,6 +242,7 @@ services:
       CHANNELS_PER_CYCLER: ${CHANNELS_PER_CYCLER:-32}
       MODBUS_PORT: "502"
       CHAMBER_ID: "A"
+      CHEMISTRY: ${CYCLER_02_CHEMISTRY:-LCO}
     ports: ["5022:502"]
     depends_on:
       mosquitto: {condition: service_healthy}
@@ -254,6 +256,7 @@ services:
       CHANNELS_PER_CYCLER: ${CHANNELS_PER_CYCLER:-32}
       MODBUS_PORT: "502"
       CHAMBER_ID: "A"
+      CHEMISTRY: ${CYCLER_03_CHEMISTRY:-LCO}
     ports: ["5023:502"]
     depends_on:
       mosquitto: {condition: service_healthy}
@@ -267,6 +270,7 @@ services:
       CHANNELS_PER_CYCLER: ${CHANNELS_PER_CYCLER:-32}
       MODBUS_PORT: "502"
       CHAMBER_ID: "A"
+      CHEMISTRY: ${CYCLER_04_CHEMISTRY:-LCO}
     ports: ["5024:502"]
     depends_on:
       mosquitto: {condition: service_healthy}
@@ -280,6 +284,7 @@ services:
       CHANNELS_PER_CYCLER: ${CHANNELS_PER_CYCLER:-32}
       MODBUS_PORT: "502"
       CHAMBER_ID: "A"
+      CHEMISTRY: ${CYCLER_05_CHEMISTRY:-LCO}
     ports: ["5025:502"]
     depends_on:
       mosquitto: {condition: service_healthy}
@@ -293,6 +298,7 @@ services:
       CHANNELS_PER_CYCLER: ${CHANNELS_PER_CYCLER:-32}
       MODBUS_PORT: "502"
       CHAMBER_ID: "A"
+      CHEMISTRY: ${CYCLER_06_CHEMISTRY:-LCO}
     ports: ["5026:502"]
     depends_on:
       mosquitto: {condition: service_healthy}
@@ -306,6 +312,7 @@ services:
       CHANNELS_PER_CYCLER: ${CHANNELS_PER_CYCLER:-32}
       MODBUS_PORT: "502"
       CHAMBER_ID: "A"
+      CHEMISTRY: ${CYCLER_07_CHEMISTRY:-LCO}
     ports: ["5027:502"]
     depends_on:
       mosquitto: {condition: service_healthy}
@@ -319,6 +326,7 @@ services:
       CHANNELS_PER_CYCLER: ${CHANNELS_PER_CYCLER:-32}
       MODBUS_PORT: "502"
       CHAMBER_ID: "A"
+      CHEMISTRY: ${CYCLER_08_CHEMISTRY:-LCO}
     ports: ["5028:502"]
     depends_on:
       mosquitto: {condition: service_healthy}
@@ -332,6 +340,7 @@ services:
       CHANNELS_PER_CYCLER: ${CHANNELS_PER_CYCLER:-32}
       MODBUS_PORT: "502"
       CHAMBER_ID: "B"
+      CHEMISTRY: ${CYCLER_09_CHEMISTRY:-NMC}
     ports: ["5029:502"]
     depends_on:
       mosquitto: {condition: service_healthy}
@@ -345,6 +354,7 @@ services:
       CHANNELS_PER_CYCLER: ${CHANNELS_PER_CYCLER:-32}
       MODBUS_PORT: "502"
       CHAMBER_ID: "B"
+      CHEMISTRY: ${CYCLER_10_CHEMISTRY:-NMC}
     ports: ["5030:502"]
     depends_on:
       mosquitto: {condition: service_healthy}
@@ -358,6 +368,7 @@ services:
       CHANNELS_PER_CYCLER: ${CHANNELS_PER_CYCLER:-32}
       MODBUS_PORT: "502"
       CHAMBER_ID: "B"
+      CHEMISTRY: ${CYCLER_11_CHEMISTRY:-NMC}
     ports: ["5031:502"]
     depends_on:
       mosquitto: {condition: service_healthy}
@@ -371,6 +382,7 @@ services:
       CHANNELS_PER_CYCLER: ${CHANNELS_PER_CYCLER:-32}
       MODBUS_PORT: "502"
       CHAMBER_ID: "B"
+      CHEMISTRY: ${CYCLER_12_CHEMISTRY:-NMC}
     ports: ["5032:502"]
     depends_on:
       mosquitto: {condition: service_healthy}
@@ -384,6 +396,7 @@ services:
       CHANNELS_PER_CYCLER: ${CHANNELS_PER_CYCLER:-32}
       MODBUS_PORT: "502"
       CHAMBER_ID: "B"
+      CHEMISTRY: ${CYCLER_13_CHEMISTRY:-NMC}
     ports: ["5033:502"]
     depends_on:
       mosquitto: {condition: service_healthy}
@@ -397,6 +410,7 @@ services:
       CHANNELS_PER_CYCLER: ${CHANNELS_PER_CYCLER:-32}
       MODBUS_PORT: "502"
       CHAMBER_ID: "B"
+      CHEMISTRY: ${CYCLER_14_CHEMISTRY:-NMC}
     ports: ["5034:502"]
     depends_on:
       mosquitto: {condition: service_healthy}
@@ -410,6 +424,7 @@ services:
       CHANNELS_PER_CYCLER: ${CHANNELS_PER_CYCLER:-32}
       MODBUS_PORT: "502"
       CHAMBER_ID: "B"
+      CHEMISTRY: ${CYCLER_15_CHEMISTRY:-NMC}
     ports: ["5035:502"]
     depends_on:
       mosquitto: {condition: service_healthy}
@@ -423,6 +438,7 @@ services:
       CHANNELS_PER_CYCLER: ${CHANNELS_PER_CYCLER:-32}
       MODBUS_PORT: "502"
       CHAMBER_ID: "B"
+      CHEMISTRY: ${CYCLER_16_CHEMISTRY:-NMC}
     ports: ["5036:502"]
     depends_on:
       mosquitto: {condition: service_healthy}
@@ -601,6 +617,14 @@ services:
       WATCHDOG_FLEET_FAIL_THRESHOLD: ${WATCHDOG_FLEET_FAIL_THRESHOLD:-8}
       WATCHDOG_FLEET_FAIL_WINDOW_S: ${WATCHDOG_FLEET_FAIL_WINDOW_S:-30}
       WATCHDOG_FLEET_FAIL_POLL_S: ${WATCHDOG_FLEET_FAIL_POLL_S:-10}
+      WATCHDOG_HEARTBEAT_THRESHOLD_S: ${WATCHDOG_HEARTBEAT_THRESHOLD_S:-10}
+      WATCHDOG_HEARTBEAT_POLL_S: ${WATCHDOG_HEARTBEAT_POLL_S:-2}
+      WATCHDOG_CHAMBER_BREACH_BAND_C: ${WATCHDOG_CHAMBER_BREACH_BAND_C:-5.0}
+      WATCHDOG_CHAMBER_BREACH_DURATION_S: ${WATCHDOG_CHAMBER_BREACH_DURATION_S:-300}
+      WATCHDOG_CHAMBER_STARTUP_GRACE_S: ${WATCHDOG_CHAMBER_STARTUP_GRACE_S:-60}
+      WATCHDOG_CHAMBER_CHECK_PERIOD_S: ${WATCHDOG_CHAMBER_CHECK_PERIOD_S:-5}
+      WATCHDOG_CHASSIS_POLL_SIM_S: ${WATCHDOG_CHASSIS_POLL_SIM_S:-5.0}
+      WATCHDOG_CHASSIS_STARTUP_GRACE_POLLS: ${WATCHDOG_CHASSIS_STARTUP_GRACE_POLLS:-1}
     depends_on:
       postgres: {condition: service_healthy}
       mosquitto: {condition: service_healthy}

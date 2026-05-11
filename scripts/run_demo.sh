@@ -3,9 +3,9 @@
 # channels per the schedule's `bench:` block), waits for completion, and
 # asserts telemetry rows exist.
 #
-# Default schedule is demo_5cycle; override to smoke-test a new schedule
+# Default schedule is demo_5cycle_lco; override to smoke-test a new schedule
 # (any of these forms work, mirroring scripts/run_soak.sh):
-#     SCHEDULE=my_new make demo
+#     SCHEDULE=demo_5cycle_nmc make demo
 #     SCHEDULE=my_new.yaml make demo
 #     SCHEDULE=schedules/my_new.yaml make demo
 set -euo pipefail
@@ -18,7 +18,7 @@ PG_DB="${POSTGRES_DB:-lab}"
 TSDB_USER="${TSDB_USER:-lab}"
 TSDB_DB="${TSDB_DB:-telemetry}"
 
-resolve_schedule "${SCHEDULE:-demo_5cycle}" demo
+resolve_schedule "${SCHEDULE:-demo_5cycle_lco}" demo
 
 # Read chassis list and channel count from the schedule's bench: block.
 eval "$(uv run python scripts/schedule_bench.py "$SCHEDULE_FILE")"

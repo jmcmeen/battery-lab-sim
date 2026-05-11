@@ -1,0 +1,25 @@
+schedule_id: phone_fastcharge_nmc
+chemistry: NMC
+bench:
+  chassis: 9-16              # Chamber B (45 °C, default NMC)
+  channels_per_chassis: 32
+chamber:
+  setpoint_c: 45.0
+  soak_seconds: 600
+# v0.1.8: NMC variant of the multi-stage fast-charge profile. Same
+# step-charge shape as phone_fastcharge_lco but to phone-grade NMC's
+# 4.40 V cutoff at chamber B's elevated 45 °C. The temperature stress
+# combined with the step-charge protocol produces the most aggressive
+# realistic phone aging signature in the schedule library — useful for
+# cross-chemistry / cross-temperature analytics comparisons.
+steps:
+  - {name: initial_rest,     type: rest, duration_s: 60}
+  - {name: cc_2c,            type: cc, rate_c: 2.0,  end_when: {voltage_v_above: 4.05, max_duration_s: 1200}}
+  - {name: cc_1_5c,          type: cc, rate_c: 1.5,  end_when: {voltage_v_above: 4.25, max_duration_s: 1200}}
+  - {name: cc_1c,            type: cc, rate_c: 1.0,  end_when: {voltage_v_above: 4.40, max_duration_s: 1800}}
+  - {name: cv_charge,        type: cv, voltage_v: 4.40, end_when: {current_a_below_c_rate: 0.05, max_duration_s: 3600}}
+  - {name: rest_top,         type: rest, duration_s: 300}
+  - {name: cc_discharge,     type: cc, rate_c: -1.0, end_when: {voltage_v_below: 3.00, max_duration_s: 5400}}
+  - {name: rest_bottom,      type: rest, duration_s: 300}
+cycle:
+  repeat: 500

@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Sequence
 
+from batterylab.chemistry import get_chemistry
+from batterylab.ecm import ECMCell
 from batterylab.log import get
 from batterylab.modbus_maps import (
     CHANNEL_BLOCK_SIZE,
@@ -22,6 +24,8 @@ from batterylab.modbus_maps import (
     ChassisReg,
     ModbusMode,
     channel_base,
+    chemistry_id_for_name,
+    chemistry_name_for_id,
     decode_f32,
     encode_f32,
     to_int16_signed,
@@ -67,6 +71,14 @@ class ChassisDataBlock(ModbusSparseDataBlock):
         super().setValues(int(ChassisReg.TOTAL_CHANNELS), [len(channels)])
         super().setValues(int(ChassisReg.PROTOCOL_VERSION), [PROTOCOL_VERSION])
 
+        # Seed chassis CHEMISTRY from current cell chemistry. All channels
+        # share one chemistry at any moment, so reading channels[0] is fine.
+        if channels:
+            super().setValues(
+                int(ChassisReg.CHEMISTRY),
+                [chemistry_id_for_name(channels[0].cell.chem.name)],
+            )
+
         # Seed channel safety defaults.
         for i, ch in enumerate(channels):
             base = channel_base(i)
@@ -102,6 +114,11 @@ class ChassisDataBlock(ModbusSparseDataBlock):
             if addr == int(ChassisReg.CHASSIS_WATCHDOG_KICK):
                 self._kick_state.kick()
                 log.debug("chassis_kick")
+                return
+            if addr == int(ChassisReg.CHEMISTRY):
+                [chem_id] = super().getValues(int(ChassisReg.CHEMISTRY), 1)
+                self._set_chemistry(int(chem_id))
+                return
             return
 
         ch_idx = addr // CHANNEL_BLOCK_SIZE
@@ -148,6 +165,54 @@ class ChassisDataBlock(ModbusSparseDataBlock):
                     v_max_mv=int(v_max),
                     t_max_dc=int(t_max),
                 )
+
+
+    def _set_chemistry(self, chem_id_value: int) -> None:
+        """Rebuild every channel's ECMCell with the new chemistry.
+
+        Sync path: pymodbus dispatches register writes inside the asyncio
+        event loop (no threading), and cell_loop / safety_loop read
+        ``ch.cell`` fresh on every tick — so reassigning ``ch.cell`` here
+        is a single-event-loop atomic swap that takes effect on the next
+        physics step. No task teardown needed.
+
+        Aging state, mode, setpoint, latched error, and cycle index all
+        reset — a chemistry change models a physical cell swap, so
+        continuing the old aging trajectory would be wrong. If the
+        register value matches the current chemistry, this is a no-op
+        (preserves aging across same-chemistry experiments).
+
+        Unknown chemistry ids are logged and ignored — the on-wire enum
+        is fixed in modbus_maps.ChemistryId; a typoed write doesn't
+        warrant tearing down the bench.
+        """
+        try:
+            name = chemistry_name_for_id(chem_id_value)
+        except ValueError as e:
+            log.warning("chassis_chemistry_unknown_id", value=chem_id_value, error=str(e))
+            return
+
+        if not self._channels:
+            return
+
+        current = self._channels[0].cell.chem.name
+        if current == name:
+            return
+
+        chem = get_chemistry(name)
+        for ch in self._channels:
+            ch.cell = ECMCell(chem=chem, capacity_ah=chem.capacity_ah_nominal, soc=0.5)
+            ch.mode = "idle"
+            ch.setpoint = 0.0
+            ch.latched_error = ErrorCode.NONE
+            ch.safety_v_max_mv = chem.v_max_mv
+            ch.cycle_index = 0
+        log.info(
+            "chassis_chemistry_changed",
+            from_chemistry=current,
+            to_chemistry=name,
+            channels=len(self._channels),
+        )
 
 
 def _u16_clamp(v: float) -> int:
@@ -223,6 +288,16 @@ async def mirror_loop(
             int(ChassisReg.CHASSIS_WATCHDOG_STATUS),
             [1 if kick_state.tripped else 0],
         )
+        # Keep CHEMISTRY register reflecting live cells. Self-corrects if a
+        # client wrote an unknown id (the write persisted, but _set_chemistry
+        # rejected the rebuild — without this mirror the register would
+        # report a chemistry the cells aren't actually running).
+        if channels:
+            ModbusSparseDataBlock.setValues(
+                block,
+                int(ChassisReg.CHEMISTRY),
+                [chemistry_id_for_name(channels[0].cell.chem.name)],
+            )
 
         await SimTime.sleep(MIRROR_PERIOD_SIM_S)
 

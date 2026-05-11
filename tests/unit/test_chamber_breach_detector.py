@@ -2,7 +2,7 @@
 
 ChamberStates.update_from_msg() ingests an MQTT payload and tracks the
 breach-start timestamp. is_breach_sustained() returns True only when the
-deviation has persisted past BREACH_DURATION_S wall seconds.
+deviation has persisted past ChamberStates.breach_duration_s wall seconds.
 
 We mock time.monotonic() to drive the detector through synthetic histories
 without sleeping.
@@ -16,11 +16,15 @@ from unittest.mock import patch
 
 import pytest
 from watchdog.chamber_monitor import (
-    BREACH_BAND_C,
-    BREACH_DURATION_S,
+    DEFAULT_BREACH_BAND_C,
+    DEFAULT_BREACH_DURATION_S,
     ChamberStates,
     is_breach_sustained,
 )
+
+# Module-local aliases keep test bodies readable.
+BREACH_BAND_C = DEFAULT_BREACH_BAND_C
+BREACH_DURATION_S = DEFAULT_BREACH_DURATION_S
 
 
 def _payload(chamber_id: str, measured_c: float, setpoint_c: float) -> bytes:
@@ -43,7 +47,7 @@ def test_no_breach_when_measured_inside_band(mock_time: list[float]) -> None:
     states.update_from_msg(_payload("A", 25.0, 25.0))
     state = states._by_id["A"]
     assert state.breach_started_monotonic is None
-    assert is_breach_sustained(state) is False
+    assert is_breach_sustained(state, BREACH_DURATION_S) is False
 
 
 @pytest.mark.unit
@@ -63,11 +67,11 @@ def test_breach_starts_only_after_sustained(mock_time: list[float]) -> None:
 
     # Just before the threshold — not yet sustained.
     mock_time[0] = 1000.0 + BREACH_DURATION_S - 1.0
-    assert is_breach_sustained(state) is False
+    assert is_breach_sustained(state, BREACH_DURATION_S) is False
 
     # Past the threshold — sustained.
     mock_time[0] = 1000.0 + BREACH_DURATION_S + 1.0
-    assert is_breach_sustained(state) is True
+    assert is_breach_sustained(state, BREACH_DURATION_S) is True
 
 
 @pytest.mark.unit
@@ -80,7 +84,7 @@ def test_returning_to_band_clears_breach(mock_time: list[float]) -> None:
     mock_time[0] = 1100.0
     states.update_from_msg(_payload("A", 25.5, 25.0))  # back inside band
     assert state.breach_started_monotonic is None
-    assert is_breach_sustained(state) is False
+    assert is_breach_sustained(state, BREACH_DURATION_S) is False
 
 
 @pytest.mark.unit
@@ -101,7 +105,7 @@ def test_re_breach_resets_timer(mock_time: list[float]) -> None:
     states.update_from_msg(_payload("A", 32.0, 25.0))
     assert state.breach_started_monotonic == 2000.0
     mock_time[0] = 2000.0 + BREACH_DURATION_S - 1.0
-    assert is_breach_sustained(state) is False
+    assert is_breach_sustained(state, BREACH_DURATION_S) is False
 
 
 @pytest.mark.unit

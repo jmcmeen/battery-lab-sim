@@ -21,6 +21,7 @@ import sys
 from datetime import UTC, datetime, timedelta
 
 import asyncpg
+from batterylab.db import make_dsn
 from batterylab.log import configure as configure_log
 from batterylab.log import get
 
@@ -111,9 +112,8 @@ def _bootstrap_s3(cfg: dict):
 
 
 def _dsn(cfg: dict) -> str:
-    return (
-        f"postgresql://{cfg['tsdb_user']}:{cfg['tsdb_pw']}"
-        f"@{cfg['tsdb_host']}:{cfg['tsdb_port']}/{cfg['tsdb_db']}"
+    return make_dsn(
+        cfg["tsdb_user"], cfg["tsdb_pw"], cfg["tsdb_host"], cfg["tsdb_port"], cfg["tsdb_db"]
     )
 
 

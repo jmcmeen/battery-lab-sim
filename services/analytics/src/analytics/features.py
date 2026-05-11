@@ -101,14 +101,17 @@ def dq_dv_peaks(
     time_s: np.ndarray,
     bin_mv: int = 10,
     voltage_min: float = 3.0,
-    voltage_max: float = 4.2,
+    voltage_max: float = 4.5,
     peak_height: float = 0.1,
 ) -> list[DqDvPeak]:
     """Bin charge into voltage windows, compute dQ/dV, find peaks.
 
     Severson et al. 2019 used dQ/dV peak shifts + intensity loss as
-    cycle-life predictors. Peak voltage shift is the LFP knee migration
-    signal; peak amplitude loss is the NMC degradation signature.
+    cycle-life predictors. Peak voltage shift tracks active-material
+    rearrangement as cells age; peak amplitude loss tracks loss of
+    lithium inventory. v0.1.8 widened the default voltage window to
+    4.5 V to cover both LCO (4.35 V top of charge) and phone-grade NMC
+    (4.40 V) without clipping the high-SOC peaks.
 
     Returns peaks ordered by voltage. Empty list if too few samples or
     no peaks above `peak_height`.

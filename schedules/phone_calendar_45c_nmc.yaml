@@ -1,0 +1,22 @@
+schedule_id: phone_calendar_45c_nmc
+chemistry: NMC
+bench:
+  chassis: 9-16              # Chamber B (native 45 °C, default NMC) — no setpoint override
+  channels_per_chassis: 32
+chamber:
+  setpoint_c: 45.0
+  soak_seconds: 1800
+# v0.1.8: NMC variant of the calendar-aging study. Chamber B is already
+# 45 °C native (defined in docker-compose), so this needs no setpoint
+# override — clean default-friendly LCO/NMC matrix entry. The 168 h hold
+# at phone-grade 4.40 V V_max stresses NMC's higher charge-voltage SEI
+# growth pathway; the contrast with phone_calendar_45c_lco (4.35 V hold)
+# is the chemistry-side of the calendar-aging story.
+steps:
+  - {name: initial_rest,   type: rest, duration_s: 600}
+  - {name: cc_charge,      type: cc, rate_c: 0.5,  end_when: {voltage_v_above: 4.40, max_duration_s: 9000}}
+  - {name: cv_charge,      type: cv, voltage_v: 4.40, end_when: {current_a_below_c_rate: 0.05, max_duration_s: 7200}}
+  - {name: float_hold,     type: cv, voltage_v: 4.40, end_when: {max_duration_s: 604800}}   # 168 h
+  - {name: rest_after,     type: rest, duration_s: 600}
+cycle:
+  repeat: 1

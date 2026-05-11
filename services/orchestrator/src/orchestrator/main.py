@@ -16,6 +16,7 @@ from collections.abc import Sequence
 
 import asyncpg
 from batterylab.chemistry import get_chemistry
+from batterylab.db import make_dsn
 from batterylab.errors import ScheduleError
 from batterylab.log import configure as configure_log
 from batterylab.log import get
@@ -426,7 +427,9 @@ async def _resume_inflight(
             # Mode-drift check — see policy block above.
             chem = get_chemistry(exp.schedule.chemistry)
             expected_mode, expected_setpoint = step_to_command(
-                exp.schedule.steps[exp.step_index], chem.capacity_ah_nominal
+                exp.schedule.steps[exp.step_index],
+                chem.capacity_ah_nominal,
+                chem.max_charge_c_rate,
             )
             if snap.mode != expected_mode:
                 await _handle_resume_drift(
@@ -582,7 +585,7 @@ async def _run() -> None:
         mqtt=f"{mqtt_host}:{mqtt_port}",
     )
 
-    dsn = f"postgresql://{pg_user}:{pg_pw}@{pg_host}:{pg_port}/{pg_db}"
+    dsn = make_dsn(pg_user, pg_pw, pg_host, pg_port, pg_db)
 
     cyclers: list[CyclerClient] = []
     for host, port in cycler_hosts:
