@@ -85,7 +85,7 @@ flowchart LR
     end
 
     subgraph reliability["Reliability plane"]
-        WD["watchdog<br/>heartbeat / chassis / chamber drift"]
+        WD["watchdog<br/>heartbeat / chassis / chamber drift<br/>fleet-failure rollup"]
         ANA["analytics<br/>dQ/dV, R₀, anomaly"]
     end
 
@@ -107,6 +107,7 @@ flowchart LR
     MQTT -- "events/cycle_complete" --> ANA
     ANA -- "cycle_features<br/>+ R₀-jump alert" --> PG
     WD -- "alerts.row" --> PG
+    PG -- "failed-experiments poll" --> WD
     ORCH --> PG
     PG --> GRAF
     TSDB --> GRAF
@@ -117,7 +118,7 @@ flowchart LR
 **Four lanes:**
 - **Control** — orchestrator drives cyclers via Modbus. Idempotent commands, 1 Hz heartbeat, chassis dead-man halts cells if the orchestrator goes silent.
 - **Telemetry** — cyclers + chambers → MQTT → ingester → TimescaleDB (hot) → daily Parquet export → MinIO (cold). DuckDB unifies hot + cold for ad-hoc queries.
-- **Reliability** — watchdog observes (never actuates), writes durable alerts. Analytics computes per-cycle features and emits R₀-anomaly alerts.
+- **Reliability** — watchdog observes (never actuates), writes durable alerts. Four monitors: orchestrator heartbeat, per-chassis dead-man, per-chamber temperature drift, and a fleet-failure rollup that polls Postgres for bursts of `status='failed'` and emits one critical alert instead of N leaf alerts. Each cycler / chamber container also runs an in-process FD-pressure tripwire (warn at 80 % of `RLIMIT_NOFILE`) and a tmpfs-heartbeat healthcheck — both lessons from the v0.1.7 fleet trip (FD exhaustion in the Modbus accept path driven by Modbus-roundtrip healthchecks). Analytics computes per-cycle features and emits R₀-anomaly alerts.
 - **Metadata** — Postgres holds schedules (with git SHA), experiments, cycle_features, and alerts. Strictly separated from telemetry per CLAUDE.md invariant #3.
 
 ## What it demonstrates

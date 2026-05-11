@@ -40,6 +40,15 @@ x-cycler-base: &cycler-base
   # soak: typical RSS ~110 MB, peak ~140 MB. Bump if you raise
   # CHANNELS_PER_CYCLER above 32.
   mem_limit: 256m
+  # Default Docker soft FD limit is 1024. Modbus TCP server + healthcheck
+  # churn can leak sockets into that bucket faster than the TIME_WAIT
+  # timer reaps them. The leak itself is fixed in modbus_server.py /
+  # healthcheck.py; this is belt-and-suspenders so a regression turns
+  # into a slow drift, not a 3-hour fleet trip.
+  ulimits:
+    nofile:
+      soft: 65536
+      hard: 65536
   healthcheck:
     test: ["CMD-SHELL", "python -m cycler.healthcheck || exit 1"]
     interval: 10s
@@ -54,6 +63,10 @@ x-chamber-base: &chamber-base
   restart: *restart
   logging: *default-logging
   mem_limit: 256m
+  ulimits:
+    nofile:
+      soft: 65536
+      hard: 65536
   healthcheck:
     test: ["CMD-SHELL", "python -m chamber.healthcheck || exit 1"]
     interval: 10s
@@ -585,6 +598,9 @@ services:
       PG_PASSWORD: ${POSTGRES_PASSWORD:-lab}
       PG_DB: ${POSTGRES_DB:-lab}
       CYCLER_HOSTS: "cycler_01:502,cycler_02:502,cycler_03:502,cycler_04:502,cycler_05:502,cycler_06:502,cycler_07:502,cycler_08:502,cycler_09:502,cycler_10:502,cycler_11:502,cycler_12:502,cycler_13:502,cycler_14:502,cycler_15:502,cycler_16:502"
+      WATCHDOG_FLEET_FAIL_THRESHOLD: ${WATCHDOG_FLEET_FAIL_THRESHOLD:-8}
+      WATCHDOG_FLEET_FAIL_WINDOW_S: ${WATCHDOG_FLEET_FAIL_WINDOW_S:-30}
+      WATCHDOG_FLEET_FAIL_POLL_S: ${WATCHDOG_FLEET_FAIL_POLL_S:-10}
     depends_on:
       postgres: {condition: service_healthy}
       mosquitto: {condition: service_healthy}

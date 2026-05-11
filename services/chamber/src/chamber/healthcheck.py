@@ -1,47 +1,25 @@
-"""Docker healthcheck: opens a Modbus TCP read of chamber PROTOCOL_VERSION.
+"""Docker healthcheck: stat the chamber's liveness file.
 
-Exits 0 on healthy, non-zero otherwise.
+The chamber main loop runs an ``alive_writer`` task that touches
+``/tmp/chamber.alive`` every 5 wall-seconds. This healthcheck just checks
+the mtime is recent. Zero new sockets per probe — see the cycler healthcheck
+docstring for the rationale.
 """
 
 from __future__ import annotations
 
-import asyncio
 import sys
 
-from batterylab.modbus_maps import CHAMBER_PROTOCOL_VERSION, ChamberReg
-from pymodbus.client import AsyncModbusTcpClient
+from batterylab.alive import is_alive
 
+from . import ALIVE_PATH
 
-async def _check() -> int:
-    """Read PROTOCOL_VERSION over local Modbus and assert it matches the
-    library constant. A mismatch means the chamber service is running
-    against a stale image — surface that as unhealthy rather than letting
-    the orchestrator drive bad commands."""
-    client = AsyncModbusTcpClient("127.0.0.1", port=502, timeout=2.0)
-    try:
-        ok = await client.connect()
-        if not ok:
-            print("healthcheck: connect failed", file=sys.stderr)
-            return 1
-        rsp = await client.read_holding_registers(int(ChamberReg.PROTOCOL_VERSION), count=1)
-        if rsp.isError():
-            print(f"healthcheck: read error: {rsp}", file=sys.stderr)
-            return 1
-        ver = rsp.registers[0]
-        if ver != CHAMBER_PROTOCOL_VERSION:
-            print(
-                f"healthcheck: protocol mismatch: got {ver}, expect {CHAMBER_PROTOCOL_VERSION}",
-                file=sys.stderr,
-            )
-            return 1
-        return 0
-    finally:
-        client.close()
+MAX_AGE_S = 30.0  # 6× the 5 s writer period
 
 
 def main() -> None:
     """Sync entry point invoked by the docker HEALTHCHECK directive."""
-    sys.exit(asyncio.run(_check()))
+    sys.exit(0 if is_alive(ALIVE_PATH, MAX_AGE_S) else 1)
 
 
 if __name__ == "__main__":

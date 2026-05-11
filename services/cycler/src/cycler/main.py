@@ -16,11 +16,14 @@ import asyncio
 import os
 import signal
 
+from batterylab.alive import alive_writer
 from batterylab.chemistry import get_chemistry
 from batterylab.ecm import ECMCell
+from batterylab.fdpressure import fd_pressure_monitor
 from batterylab.log import configure as configure_log
 from batterylab.log import get
 
+from . import ALIVE_PATH
 from .ambient import AmbientState, ambient_subscriber, make_provider
 from .channel import Channel
 from .modbus_server import run_modbus_server
@@ -95,6 +98,8 @@ async def _run() -> None:
         tg.create_task(run_modbus_server(channels, kick_state, chassis_id, modbus_port))
         if chamber_id:
             tg.create_task(ambient_subscriber(ambient_state, chamber_id, mqtt_host, mqtt_port))
+        tg.create_task(alive_writer(ALIVE_PATH))
+        tg.create_task(fd_pressure_monitor())
         await stop.wait()
         log.info("cycler_stopping")
         raise asyncio.CancelledError("shutdown requested")

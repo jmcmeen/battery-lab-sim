@@ -179,27 +179,40 @@
     },
     {
       "id": 7,
-      "type": "timeseries",
+      "type": "xychart",
       "title": "Capacity vs Cycle (Ah)",
+      "description": "Per-cycle capacity. X axis is cycle_index, so all cycles render regardless of the dashboard time picker.",
       "gridPos": {"x": 0, "y": 20, "w": 12, "h": 8},
       "datasource": {"type": "postgres", "uid": "pg-metadata"},
       "fieldConfig": {
         "defaults": {
           "unit": "amph",
-          "custom": {"drawStyle": "line", "pointSize": 5, "fillOpacity": 10}
+          "custom": {
+            "show": "lines+points",
+            "pointSize": {"fixed": 5},
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "axisPlacement": "auto"
+          }
         }
+      },
+      "options": {
+        "mapping": "auto",
+        "series": [],
+        "legend": {"showLegend": false},
+        "tooltip": {"mode": "single"}
       },
       "targets": [
         {
           "refId": "A",
-          "format": "time_series",
-          "rawSql": "SELECT computed_at AS \"time\", capacity_ah AS value, 'capacity_ah' AS metric FROM cycle_features WHERE experiment_id = '${experiment_id}' ORDER BY cycle_index"
+          "format": "table",
+          "rawSql": "SELECT cycle_index, capacity_ah FROM cycle_features WHERE experiment_id = '${experiment_id}' AND capacity_ah IS NOT NULL ORDER BY cycle_index"
         }
       ]
     },
     {
       "id": 8,
-      "type": "timeseries",
+      "type": "xychart",
       "title": "Coulombic efficiency vs Cycle",
       "gridPos": {"x": 12, "y": 20, "w": 12, "h": 8},
       "datasource": {"type": "postgres", "uid": "pg-metadata"},
@@ -208,34 +221,58 @@
           "unit": "percentunit",
           "min": 0.95,
           "max": 1.0,
-          "custom": {"drawStyle": "line", "pointSize": 5, "fillOpacity": 10}
+          "custom": {
+            "show": "lines+points",
+            "pointSize": {"fixed": 5},
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "axisPlacement": "auto"
+          }
         }
+      },
+      "options": {
+        "mapping": "auto",
+        "series": [],
+        "legend": {"showLegend": false},
+        "tooltip": {"mode": "single"}
       },
       "targets": [
         {
           "refId": "A",
-          "format": "time_series",
-          "rawSql": "SELECT computed_at AS \"time\", coulombic_eff AS value, 'CE' AS metric FROM cycle_features WHERE experiment_id = '${experiment_id}' AND coulombic_eff IS NOT NULL ORDER BY cycle_index"
+          "format": "table",
+          "rawSql": "SELECT cycle_index, coulombic_eff FROM cycle_features WHERE experiment_id = '${experiment_id}' AND coulombic_eff IS NOT NULL ORDER BY cycle_index"
         }
       ]
     },
     {
       "id": 9,
-      "type": "timeseries",
+      "type": "xychart",
       "title": "Internal resistance R₀ vs Cycle (Ω)",
       "gridPos": {"x": 0, "y": 28, "w": 12, "h": 8},
       "datasource": {"type": "postgres", "uid": "pg-metadata"},
       "fieldConfig": {
         "defaults": {
           "unit": "ohm",
-          "custom": {"drawStyle": "line", "pointSize": 5, "fillOpacity": 10}
+          "custom": {
+            "show": "lines+points",
+            "pointSize": {"fixed": 5},
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "axisPlacement": "auto"
+          }
         }
+      },
+      "options": {
+        "mapping": "auto",
+        "series": [],
+        "legend": {"showLegend": false},
+        "tooltip": {"mode": "single"}
       },
       "targets": [
         {
           "refId": "A",
-          "format": "time_series",
-          "rawSql": "SELECT computed_at AS \"time\", r0_ohm AS value, 'r0_ohm' AS metric FROM cycle_features WHERE experiment_id = '${experiment_id}' AND r0_ohm IS NOT NULL ORDER BY cycle_index"
+          "format": "table",
+          "rawSql": "SELECT cycle_index, r0_ohm FROM cycle_features WHERE experiment_id = '${experiment_id}' AND r0_ohm IS NOT NULL ORDER BY cycle_index"
         }
       ]
     },
@@ -256,7 +293,7 @@
     },
     {
       "id": 11,
-      "type": "timeseries",
+      "type": "xychart",
       "title": "dQ/dV peak voltage shift vs Cycle",
       "description": "Top 3 most prominent dQ/dV peaks per cycle, plotted by peak voltage. The Severson signature: peaks shift and shrink as the cell ages.",
       "gridPos": {"x": 0, "y": 36, "w": 12, "h": 8},
@@ -264,20 +301,32 @@
       "fieldConfig": {
         "defaults": {
           "unit": "volt",
-          "custom": {"drawStyle": "line", "pointSize": 5, "fillOpacity": 0, "spanNulls": true}
+          "custom": {
+            "show": "lines+points",
+            "pointSize": {"fixed": 5},
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "axisPlacement": "auto"
+          }
         }
+      },
+      "options": {
+        "mapping": "auto",
+        "series": [],
+        "legend": {"showLegend": true, "displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "single"}
       },
       "targets": [
         {
           "refId": "A",
-          "format": "time_series",
-          "rawSql": "SELECT computed_at AS \"time\", voltage_v AS value, 'peak_' || rn AS metric FROM (SELECT computed_at, cycle_index, (peak->>'voltage_v')::float AS voltage_v, ROW_NUMBER() OVER (PARTITION BY cycle_index ORDER BY (peak->>'prominence')::float DESC) AS rn FROM cycle_features, jsonb_array_elements(dq_dv_peaks) AS peak WHERE experiment_id = '${experiment_id}' AND dq_dv_peaks IS NOT NULL) ranked WHERE rn <= 3 ORDER BY cycle_index, rn"
+          "format": "table",
+          "rawSql": "SELECT cycle_index, MAX(voltage_v) FILTER (WHERE rn = 1) AS peak_1, MAX(voltage_v) FILTER (WHERE rn = 2) AS peak_2, MAX(voltage_v) FILTER (WHERE rn = 3) AS peak_3 FROM (SELECT cycle_index, (peak->>'voltage_v')::float AS voltage_v, ROW_NUMBER() OVER (PARTITION BY cycle_index ORDER BY (peak->>'prominence')::float DESC) AS rn FROM cycle_features, jsonb_array_elements(dq_dv_peaks) AS peak WHERE experiment_id = '${experiment_id}' AND dq_dv_peaks IS NOT NULL) ranked WHERE rn <= 3 GROUP BY cycle_index ORDER BY cycle_index"
         }
       ]
     },
     {
       "id": 12,
-      "type": "timeseries",
+      "type": "xychart",
       "title": "SOH vs Cycle",
       "description": "State of Health: capacity_ah normalized to the first cycle's capacity. A healthy cell drifts down from 1.0; end-of-life is conventionally 0.8.",
       "gridPos": {"x": 12, "y": 36, "w": 12, "h": 8},
@@ -287,14 +336,26 @@
           "unit": "percentunit",
           "min": 0,
           "max": 1.0,
-          "custom": {"drawStyle": "line", "pointSize": 5, "fillOpacity": 10}
+          "custom": {
+            "show": "lines+points",
+            "pointSize": {"fixed": 5},
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "axisPlacement": "auto"
+          }
         }
+      },
+      "options": {
+        "mapping": "auto",
+        "series": [],
+        "legend": {"showLegend": false},
+        "tooltip": {"mode": "single"}
       },
       "targets": [
         {
           "refId": "A",
-          "format": "time_series",
-          "rawSql": "SELECT computed_at AS \"time\", capacity_ah / FIRST_VALUE(capacity_ah) OVER (PARTITION BY experiment_id ORDER BY cycle_index) AS value, 'SOH' AS metric FROM cycle_features WHERE experiment_id = '${experiment_id}' AND capacity_ah IS NOT NULL ORDER BY cycle_index"
+          "format": "table",
+          "rawSql": "SELECT cycle_index, capacity_ah / FIRST_VALUE(capacity_ah) OVER (PARTITION BY experiment_id ORDER BY cycle_index) AS soh FROM cycle_features WHERE experiment_id = '${experiment_id}' AND capacity_ah IS NOT NULL ORDER BY cycle_index"
         }
       ]
     }
