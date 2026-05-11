@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/jmcmeen/battery-lab-sim/actions/workflows/ci.yml/badge.svg)](https://github.com/jmcmeen/battery-lab-sim/actions/workflows/ci.yml)
 
-Dockerized digital twin of a consumer-electronics battery QA lab — built around phone-cell aging studies. **16 simulated cyclers × 32 channels = 512 cells** cycling continuously across two thermal chambers (chamber A: LCO at 25 °C, chamber B: NMC at 45 °C; silicon-carbon anode variants of both), generating billions of rows of realistic time-series telemetry through a hot tier (TimescaleDB) and a cold tier (Parquet on MinIO), queryable cross-tier from one DuckDB session.
+Dockerized digital twin of a battery R&D lab. **16 simulated cyclers × 32 channels = 512 cells** cycling continuously across two thermal chambers (chamber A: LCO at 25 °C, chamber B: NMC at 45 °C; silicon-carbon anode variants of both), generating billions of rows of realistic time-series telemetry through a hot tier (TimescaleDB) and a cold tier (Parquet on MinIO), queryable cross-tier from one DuckDB session.
 
 **Built to be broken on purpose.** Failure injection — kill the orchestrator, partition the network, fill the disk — is a first-class feature, and the system survives it: a separate watchdog service writes durable alerts on observable failures while hardware-level safety in each cycler container halts cells autonomously when the orchestrator goes silent.
 
