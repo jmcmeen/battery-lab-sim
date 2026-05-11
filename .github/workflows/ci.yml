@@ -51,7 +51,12 @@ jobs:
     name: integration (${{ matrix.shard.name }})
     runs-on: ubuntu-latest
     needs: lint-and-test
-    timeout-minutes: 15
+    # 20 min: local runs finish each shard in ~10 s, but CI cold-start cost
+    # (uv sync on cache miss after a version bump + first-time docker pulls +
+    # testcontainer fixture startup on a fresh runner) compounds. The pre-
+    # split job ran at timeout-minutes: 25 and would occasionally hit it; 20
+    # leaves margin without inviting silent regressions to hide.
+    timeout-minutes: 20
     strategy:
       # Each shard exercises a different slice of the system. Don't cancel
       # peers when one fails — we want the full signal in one CI run.
@@ -92,6 +97,10 @@ jobs:
       # Ryuk hangs on GH-hosted Docker; testcontainers' Python-side teardown
       # still stops every container at fixture exit.
       TESTCONTAINERS_RYUK_DISABLED: "true"
+      # Force-flush stdout/stderr so partial pytest output reaches the CI
+      # log before a job timeout — otherwise `pytest -q` buffers everything
+      # until process exit and a hang inside a test produces zero log lines.
+      PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -112,10 +121,50 @@ jobs:
       - name: Pre-pull Docker images for this shard
         # Parallel pre-pull bounded by shard's image list — saves ~30 s vs
         # serial testcontainers lazy-pulls. `xargs -P` parallelizes; `tr` +
-        # `xargs` flatten the multi-line matrix string.
+        # `xargs` flatten the multi-line matrix string. Each pull capped at
+        # 5 min so one image hanging at the GHCR / Docker-Hub edge surfaces
+        # as a step failure rather than burning the job's whole timeout.
+        timeout-minutes: 8
         run: |
+          set -euo pipefail
+          echo "Pulling shard images:"
+          echo "${{ matrix.shard.images }}"
           echo "${{ matrix.shard.images }}" | tr -s '[:space:]' '\n' | grep -v '^$' | \
-            xargs -P 4 -I {} docker pull {}
+            xargs -P 4 -I {} timeout 300 docker pull {}
+          echo "Pulled. Available images matching shard:"
+          docker images --format 'table {{.Repository}}\t{{.Tag}}\t{{.Size}}' | head -20
 
       - name: Integration tests (${{ matrix.shard.name }})
-        run: uv run pytest -m integration -q --durations=10 ${{ matrix.shard.files }}
+        # `-v -s --durations=0`: every test's setup/call/teardown timing
+        # surfaces in the CI log in real time (combined with
+        # PYTHONUNBUFFERED=1 above), so a hang inside a test or fixture
+        # is identifiable from the partial log even if the job is killed.
+        #
+        # `timeout 720 --kill-after=30`: GNU timeout sends SIGTERM after 12
+        # wall-min, then SIGKILL if pytest is still alive 30 s later. Why:
+        # if `testcontainers.container.stop()` deadlocks at session
+        # teardown (we disabled Ryuk, so Python-side stop is the only
+        # cleanup path), the JOB timeout would kill the runner with zero
+        # buffered output — `-q` mode + buffered stdout = nothing in the
+        # log. The explicit `timeout` lets pytest receive SIGTERM, flush
+        # whatever output it has, and exit non-zero. Job continues to the
+        # `docker ps` diagnostic step below.
+        run: |
+          timeout --signal=TERM --kill-after=30 720 \
+            uv run pytest -m integration -v -s --durations=0 ${{ matrix.shard.files }}
+
+      - name: Docker state on failure
+        if: failure()
+        # If the pytest step fails or times out, dump what containers were
+        # alive / dying / exited. Distinguishes "testcontainer never
+        # started" from "testcontainer started but never stopped."
+        run: |
+          echo "=== docker ps (running) ==="
+          docker ps
+          echo "=== docker ps -a (all) ==="
+          docker ps -a
+          echo "=== container logs (last 50 lines each) ==="
+          for cid in $(docker ps -aq); do
+            echo "--- $cid ---"
+            docker logs --tail 50 "$cid" 2>&1 || true
+          done
