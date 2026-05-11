@@ -6,7 +6,7 @@ This is the reference for the project's architectural invariants, conventions, a
 
 ## Project: Battery Lab Simulator
 
-A Dockerized digital twin of a consumer-electronics battery QA lab — phone-cell aging, specifically. Multi-channel cyclers, thermal chambers, and DAQs are simulated as containers running real industrial protocols (Modbus TCP, MQTT). Chemistries on the bench are the ones phones actually use: LCO (baseline) and high-nickel NMC (flagship), plus silicon-carbon anode variants of both. The system generates billions of rows of realistic time-series telemetry across a hot/cold storage tier, and demonstrates hardware abstraction, version-controlled schedules, and unattended-reliability primitives like dead-man timers and idempotent resume.
+A Dockerized digital twin of a battery R&D lab. Multi-channel cyclers, thermal chambers, and DAQs are simulated as containers running real industrial protocols (Modbus TCP, MQTT). The current chemistry library covers NMC and LCO with optional silicon-carbon anode variants of both. The system generates billions of rows of realistic time-series telemetry across a hot/cold storage tier, and demonstrates hardware abstraction, version-controlled schedules, and unattended-reliability primitives like dead-man timers and idempotent resume.
 
 **The simulator is built to be broken on purpose.** Failure injection (kill the orchestrator, partition the network, fill the disk) is a first-class feature, not an afterthought.
 
@@ -65,7 +65,7 @@ These are the hills to die on. Every PR that breaks one should be rejected.
 
 10. **The watchdog only alerts; it never halts cells.** Per invariant #1, hardware-level safety belongs to the cycler. The watchdog service writes to the `alerts` table and publishes to `alerts/critical`; it has no actuator path back to the cycler. Tempted to "let the watchdog kick the chassis to keep cells alive"? Don't — that couples the safety actuator to a software-level monitor.
 
-11. **Chemistry is schedule-driven at runtime, not env-driven at boot.** Since v0.1.8 the orchestrator writes the chassis `CHEMISTRY` Modbus register (`ChassisReg.CHEMISTRY` = 10010) from `schedule.chemistry` at every experiment kickoff, and the cycler rebuilds its 32 `ECMCell` instances to match. Aging state resets on a chemistry change (cell-swap semantics); same-chemistry writes are no-ops that preserve aging. The `CHEMISTRY` env in `docker-compose.yml` is a boot-time fallback only — never a runtime authority. If you're adding a feature that branches on chemistry, read it from `chem` on the live `ECMCell`, not from env.
+11. **Chemistry is schedule-driven at runtime, not env-driven at boot.** The orchestrator writes the chassis `CHEMISTRY` Modbus register (`ChassisReg.CHEMISTRY` = 10010) from `schedule.chemistry` at every experiment kickoff, and the cycler rebuilds its 32 `ECMCell` instances to match. Aging state resets on a chemistry change (cell-swap semantics); same-chemistry writes are no-ops that preserve aging. The `CHEMISTRY` env in `docker-compose.yml` is a boot-time fallback only — never a runtime authority. If you're adding a feature that branches on chemistry, read it from `chem` on the live `ECMCell`, not from env.
 
 ---
 
