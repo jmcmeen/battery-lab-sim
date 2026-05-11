@@ -70,3 +70,23 @@ def test_special_chars_in_user_round_trip() -> None:
     assert parsed.username is not None
     assert unquote(parsed.username) == "svc@team"
     assert parsed.password == "secret"
+
+
+@pytest.mark.unit
+def test_hash_in_credentials_round_trip() -> None:
+    """``#`` is the URL fragment delimiter — unescaped, urlparse treats
+    everything past it as the fragment, silently truncating the password
+    and dropping the database name. The docstring's reserved-char list
+    names ``#`` explicitly; this case pins that the helper escapes it."""
+    dsn = make_dsn("svc#a", "pa#ss", "timescaledb", 5432, "lab")
+    parsed = urlparse(dsn)
+    assert parsed.hostname == "timescaledb"
+    assert parsed.port == 5432
+    assert parsed.path == "/lab"
+    assert parsed.username is not None
+    assert parsed.password is not None
+    assert unquote(parsed.username) == "svc#a"
+    assert unquote(parsed.password) == "pa#ss"
+    # And the fragment must be empty — i.e., the `#` truly was escaped,
+    # not left raw to split the authority from a fragment.
+    assert parsed.fragment == ""
