@@ -17,7 +17,8 @@ import sys
 
 from batterylab.alive import is_alive
 
-ALIVE_PATH = "/tmp/cycler.alive"  # noqa: S108 - matches main.py ALIVE_PATH
+from . import ALIVE_PATH
+
 MAX_AGE_S = 30.0  # 6× the 5 s writer period — survives a saturated event loop
 
 

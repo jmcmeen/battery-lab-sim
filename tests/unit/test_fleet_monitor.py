@@ -2,17 +2,20 @@
 
 The DB poll lives in fleet_monitor_loop; the rising-edge decision lives in
 fleet_monitor_step. We test the decision directly with a fake sink so the
-behaviour is provable without spinning a Postgres container.
+behaviour is provable without spinning a Postgres container. The DB-poll
+helper _count_recent_failures is exercised via a fake pool that duck-types
+the asyncpg surface (acquire → async-context conn with .fetchrow).
 """
 
 from __future__ import annotations
 
-from typing import cast
+from typing import Any, cast
 
+import asyncpg
 import pytest
 from watchdog.alerts import Alert, AlertSink
 from watchdog.dedupe import EdgeTrigger
-from watchdog.fleet_monitor import fleet_monitor_step
+from watchdog.fleet_monitor import _count_recent_failures, fleet_monitor_step
 
 
 class _FakeSink:
@@ -88,3 +91,65 @@ async def test_zero_failures_silent_on_first_call() -> None:
     edge = EdgeTrigger()
     await fleet_monitor_step(sink, count=0, edge=edge, threshold=8, window_s=30.0)
     assert fake.emitted == []
+
+
+class _FakeConn:
+    """fetchrow returns a fixed value or raises a fixed exception."""
+
+    def __init__(self, *, row: Any = None, raises: Exception | None = None) -> None:
+        self._row = row
+        self._raises = raises
+
+    async def fetchrow(self, *_args: Any, **_kwargs: Any) -> Any:
+        if self._raises is not None:
+            raise self._raises
+        return self._row
+
+
+class _FakeAcquire:
+    def __init__(self, conn: _FakeConn) -> None:
+        self._conn = conn
+
+    async def __aenter__(self) -> _FakeConn:
+        return self._conn
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+
+class _FakePool:
+    """Duck-types asyncpg.Pool.acquire() for the helper. Just enough surface
+    to drive _count_recent_failures — we are not exercising connection
+    lifecycle, only the response handling."""
+
+    def __init__(self, *, row: Any = None, raises: Exception | None = None) -> None:
+        self._conn = _FakeConn(row=row, raises=raises)
+
+    def acquire(self) -> _FakeAcquire:
+        return _FakeAcquire(self._conn)
+
+
+@pytest.mark.unit
+async def test_count_recent_failures_returns_row_count() -> None:
+    """Happy path: a single COUNT(*) row gets unpacked to its int."""
+    pool = cast(asyncpg.Pool, _FakePool(row={"n": 5}))
+    assert await _count_recent_failures(pool, window_s=30.0) == 5
+
+
+@pytest.mark.unit
+async def test_count_recent_failures_returns_zero_on_none_row() -> None:
+    """COUNT(*) should never return None in practice, but the helper guards
+    for it — and a None response must not crash the poll loop."""
+    pool = cast(asyncpg.Pool, _FakePool(row=None))
+    assert await _count_recent_failures(pool, window_s=30.0) == 0
+
+
+@pytest.mark.unit
+async def test_count_recent_failures_swallows_postgres_error() -> None:
+    """A transient DB hiccup must return 0 (not raise), so the next poll
+    retries cleanly and the loop doesn't die over one bad query."""
+    pool = cast(
+        asyncpg.Pool,
+        _FakePool(raises=asyncpg.PostgresError("connection reset")),
+    )
+    assert await _count_recent_failures(pool, window_s=30.0) == 0

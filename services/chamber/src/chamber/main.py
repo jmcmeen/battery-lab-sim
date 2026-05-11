@@ -25,13 +25,13 @@ from batterylab.log import configure as configure_log
 from batterylab.log import get
 from batterylab.time import SimTime
 
+from . import ALIVE_PATH
 from .modbus_server import run_modbus_server
 from .thermal import ThermalModel
 
 log = get("chamber.main")
 
 THERMAL_STEP_HZ = 10.0  # sim-Hz at which the model integrates
-ALIVE_PATH = "/tmp/chamber.alive"  # noqa: S108 - container-local tmpfs healthcheck heartbeat
 
 
 async def thermal_loop(model: ThermalModel) -> None:

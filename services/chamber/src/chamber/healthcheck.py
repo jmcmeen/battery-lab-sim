@@ -12,7 +12,8 @@ import sys
 
 from batterylab.alive import is_alive
 
-ALIVE_PATH = "/tmp/chamber.alive"  # noqa: S108 - matches main.py ALIVE_PATH
+from . import ALIVE_PATH
+
 MAX_AGE_S = 30.0  # 6× the 5 s writer period
 
 

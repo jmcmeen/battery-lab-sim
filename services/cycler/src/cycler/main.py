@@ -23,6 +23,7 @@ from batterylab.fdpressure import fd_pressure_monitor
 from batterylab.log import configure as configure_log
 from batterylab.log import get
 
+from . import ALIVE_PATH
 from .ambient import AmbientState, ambient_subscriber, make_provider
 from .channel import Channel
 from .modbus_server import run_modbus_server
@@ -35,8 +36,6 @@ from .safety import (
 from .telemetry import telemetry_publisher
 
 log = get("cycler.main")
-
-ALIVE_PATH = "/tmp/cycler.alive"  # noqa: S108 - container-local tmpfs healthcheck heartbeat
 
 
 def _make_channels(n: int) -> list[Channel]:
