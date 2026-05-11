@@ -179,7 +179,8 @@ Layout: `channel_base(idx) = idx * 50`. Each channel owns a 50-register block. C
 | 10002 | `TOTAL_CHANNELS` | uint16 | R | |
 | 10003 | `CHASSIS_WATCHDOG_STATUS` | uint16 | R | 0=ok, 1=tripped |
 | 10004 | `CHASSIS_WATCHDOG_KICK` | uint16 | W | Write anything to refresh the chassis-level dead-man |
-| 10005 | `PROTOCOL_VERSION` | uint16 | R | **Bump this on any register-map change** so old orchestrator code errors cleanly instead of misreading silently |
+| 10005 | `PROTOCOL_VERSION` | uint16 | R | **Bump this on any register-map change** so old orchestrator code errors cleanly instead of misreading silently. Currently `3` (v0.1.8 added `CHEMISTRY`) |
+| 10010 | `CHASSIS_CHEMISTRY` | uint16 | RW | v0.1.8 schedule-driven runtime chemistry. Read returns current cells' chemistry id (`ChemistryId` enum: 1=NMC, 2=LCO, 3=NMC+SiC, 4=LCO+SiC). Write triggers a channel rebuild — every channel's `ECMCell` is reassigned to the new chemistry, aging state resets (cell-swap semantics), `safety_v_max_mv` updates from `chem.v_max_mv`. Same-chemistry write is a no-op (preserves aging). The orchestrator writes this at every experiment kickoff from `schedule.chemistry`; unknown ids are logged and ignored, with the mirror loop self-correcting on the next tick |
 
 ### Chamber registers (separate service)
 
