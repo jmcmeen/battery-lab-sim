@@ -3,7 +3,11 @@
 Build guide §3 acceptance:
 - Set setpoint to 45 °C, measured drifts to ~45 °C ± 1 °C within 2000 sim s.
 
-Tests run with SIM_TIME_FACTOR=100 so 2000 sim s lands in 20 wall s.
+The integration test fixture uses ``tau_s=60`` (10× faster than the
+production 600 s) so the convergence test wraps in ~2-3 wall-s at
+SIM_TIME_FACTOR=100, instead of the 20+ wall-s it took with the production
+τ. The assertion is "setpoint write → measured tracks," which is invariant
+to the time constant — only convergence wall time changes.
 """
 
 from __future__ import annotations
@@ -32,7 +36,11 @@ async def chamber_running(mqtt_broker, free_modbus_port, monkeypatch) -> AsyncIt
 
     from chamber.main import ambient_publisher, thermal_loop
 
-    model = ThermalModel(measured_c=25.0, setpoint_c=25.0, tau_s=600.0)
+    # tau_s=60 (vs production 600) shortens convergence wall-time 10× while
+    # leaving the mechanism under test (setpoint write → measured tracks)
+    # identical. Production τ ≈ 600 s is asserted in the build-guide §3
+    # numbers, not in this integration test.
+    model = ThermalModel(measured_c=25.0, setpoint_c=25.0, tau_s=60.0)
 
     tasks: list[asyncio.Task] = [
         asyncio.create_task(thermal_loop(model)),
@@ -70,9 +78,11 @@ async def test_setpoint_write_drives_measured(chamber_running) -> None:
         # 45.0 °C → 450 in deci-C
         await client.write_register(int(ChamberReg.SETPOINT_DC), 450)
 
-        # 2000 sim-seconds at SIM_TIME_FACTOR=100 ≈ 20 wall-seconds
-        for _ in range(40):
-            await asyncio.sleep(0.6)
+        # With tau_s=60 (test fixture) and SIM_TIME_FACTOR=100, ~3 τ of
+        # wall time gets us within ±1 °C of setpoint. Cap poll budget at
+        # 6 wall-s with a 0.2 s tick to give comfortable margin.
+        for _ in range(30):
+            await asyncio.sleep(0.2)
             rsp = await client.read_holding_registers(int(ChamberReg.MEASURED_DC), count=1)
             measured_dc = rsp.registers[0]
             if abs(measured_dc - 450) < 10:  # within ±1.0 °C
