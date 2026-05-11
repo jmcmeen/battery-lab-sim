@@ -28,6 +28,26 @@ def _free_port() -> int:
     return p
 
 
+async def _wait_for_tcp_bind(host: str, port: int, deadline_s: float = 2.0) -> None:
+    """Poll ``(host, port)`` until a TCP connect succeeds or deadline elapses.
+
+    Replaces a flat ``asyncio.sleep(0.4)`` in fixtures that needed to wait
+    for a freshly-spawned server to bind its listener. Typical bind on a
+    quiet runner takes ~20-50 ms; the flat sleep was ~10× that cost across
+    every test in the cycler shard.
+    """
+    start = asyncio.get_event_loop().time()
+    while asyncio.get_event_loop().time() - start < deadline_s:
+        try:
+            reader, writer = await asyncio.open_connection(host, port)
+            writer.close()
+            await writer.wait_closed()
+            return
+        except OSError:
+            await asyncio.sleep(0.02)
+    raise TimeoutError(f"server at {host}:{port} did not bind within {deadline_s}s")
+
+
 @pytest.fixture(scope="session")
 def mqtt_broker() -> Iterator[tuple[str, int]]:
     """Real Mosquitto via testcontainers. Returns (host, port)."""
@@ -138,6 +158,17 @@ def postgres_metadata() -> Iterator[str]:
         container.stop()
 
 
+CYCLER_TEST_WATCHDOG_THRESHOLD_S = 0.5
+"""Shortened wall-time watchdog deadline for the integration suite.
+
+Production cyclers run at 5.0 s per the build-guide §2.4 acceptance and the
+chaos recipe contract. The integration suite drops it 10× so the watchdog-
+trip test waits ~0.6 s instead of 5.5 s — saves ~5 s on the cycler shard's
+CI wall time without weakening the mechanism under test (we're proving the
+dead-man fires when kicks stop, not asserting the exact 5.0 s number).
+"""
+
+
 @pytest.fixture
 async def cycler_running(mqtt_broker, free_modbus_port, monkeypatch) -> AsyncIterator[dict]:
     """Boot the cycler in-process: 8 channels, real Modbus, real MQTT.
@@ -174,14 +205,23 @@ async def cycler_running(mqtt_broker, free_modbus_port, monkeypatch) -> AsyncIte
     tasks.append(asyncio.create_task(run_modbus_server(channels, kick_state, 1, free_modbus_port)))
     for ch in channels:
         tasks.append(asyncio.create_task(cell_loop(ch, ambient, telemetry_hz=10)))
-        tasks.append(asyncio.create_task(safety_loop(ch)))
-    tasks.append(asyncio.create_task(chassis_watchdog(channels, kick_state)))
+        tasks.append(
+            asyncio.create_task(
+                safety_loop(ch, threshold_s=CYCLER_TEST_WATCHDOG_THRESHOLD_S)
+            )
+        )
+    tasks.append(
+        asyncio.create_task(
+            chassis_watchdog(channels, kick_state, threshold_s=CYCLER_TEST_WATCHDOG_THRESHOLD_S)
+        )
+    )
     tasks.append(
         asyncio.create_task(telemetry_publisher(channels, 1, mqtt_host, mqtt_port, telemetry_hz=10))
     )
 
-    # Allow server to bind
-    await asyncio.sleep(0.4)
+    # Poll for Modbus bind instead of sleeping a flat 0.4 s. Caps wait at
+    # 2 s; typical bind takes ~20-50 ms on a quiet runner.
+    await _wait_for_tcp_bind("127.0.0.1", free_modbus_port, deadline_s=2.0)
 
     # Re-arm the chassis dead-man so it doesn't fire just because fixture setup
     # took non-zero time. Real orchestrator does the same on boot.
